@@ -1,0 +1,129 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: harmonix360_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: harmonix360
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d harmonix360"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: harmonix360_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./harmonix360/backend
+      dockerfile: Dockerfile
+    container_name: harmonix360_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/harmonix360
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: harmonix360-dev-jwt-secret-change-in-production
+      HASHID_SALT: harmonix360-secret-salt-change-in-prod
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./harmonix360/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./harmonix360/backend
+      dockerfile: Dockerfile
+    container_name: harmonix360_worker
+    command: >
+      taskiq worker app.jobs.broker:broker
+      app.jobs.tasks.notifications
+      app.jobs.tasks.ai_jobs
+      app.jobs.tasks.transfer_decision
+      app.jobs.tasks.booking_decision
+      --max-async-tasks 4
+    environment:
+      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/harmonix360
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: harmonix360-dev-jwt-secret-change-in-production
+      HASHID_SALT: harmonix360-secret-salt-change-in-prod
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
+    volumes:
+      - ./harmonix360/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mcp-server:
+    build:
+      context: ./harmonix360/backend
+      dockerfile: Dockerfile
+    container_name: harmonix360_mcp_server
+    command: ["python", "-m", "app.mcp.server"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
+      REDIS_URL: redis://redis:6379/0
+      HASHID_SALT: harmonix360-secret-salt-change-in-prod
+      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
+      MCP_SERVER_PORT: "8100"
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./harmonix360/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./harmonix360/frontend
+      dockerfile: Dockerfile
+    container_name: harmonix360_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # TODO: Add otel-collector + signoz stack
+  # TODO: Add ollama service once available locally
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: harmonix360_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+
+volumes:
+  pgdata:
+  # ollama_data:

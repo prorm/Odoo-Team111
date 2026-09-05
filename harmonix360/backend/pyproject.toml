@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harmonix360-backend"
+version = "0.1.0"
+description = "Harmonix360 FastAPI Backend"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.35",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "pydantic[email]>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "email-validator>=2.2.0",
+    "taskiq>=0.11.0",
+    "taskiq-redis>=0.5.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt<4.0.0",
+    "hashids>=1.3.1",
+    "redis>=5.0.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-instrumentation-redis>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "sentry-sdk[fastapi]>=2.14.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    # AI providers (Week 2)
+    "groq>=0.9.0",
+    "cerebras-cloud-sdk>=1.0.0",
+    # MCP server (Week 2)
+    "fastmcp>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+    "black>=24.8.0",
+    "ruff>=0.6.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# One event loop for the whole session: app/core/database.py builds its async
+# engine (and connection pool) at import time, and asyncpg connections are
+# bound to the loop that created them. Per-test loops would hand a pooled
+# connection to a loop it doesn't belong to.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

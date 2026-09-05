@@ -1,0 +1,11 @@
+export enum UserRole {
+  EMPLOYEE = 'EMPLOYEE',
+  ASSET_MANAGER = 'ASSET_MANAGER',
+  DEPARTMENT_HEAD = 'DEPARTMENT_HEAD',
+  ADMIN = 'ADMIN',
+}
+
+export enum UserStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+}

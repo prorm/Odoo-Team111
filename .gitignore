@@ -1,0 +1,43 @@
+# Machine-local Docker Compose overrides
+docker-compose.override.yml
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Local Claude Code & Tooling Settings
+.claude/*.local.json
+.impeccable/
+**/.impeccable/
+
+# Vendored skill packs — reference material, not product source
+Odoo Skills/
+"Odoo Skills"/
+
+# Python / Virtual Environments
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Frontend Build & Dependencies
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Verification & Test Execution Logs
+*.log
+verify_output*.txt
+
+# OS / Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

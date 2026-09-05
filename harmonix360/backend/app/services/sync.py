@@ -1,0 +1,328 @@
+"""Generic offline-sync engine: GET /sync/pull and POST /sync/push.
+
+Works entirely off app/services/sync_registry.py entries — no Note/Asset-
+specific code lives here, the same separation resource_registry.py keeps
+between app/services/booking.py and the concrete resource types it books.
+See HARMONIX360_ARCHITECTURE.md §13.3 for the cursor/conflict/idempotency design.
+"""
+import base64
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import ValidationError
+from sqlalchemy import select, tuple_
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.clock import server_utc_now
+from app.core.exceptions import ConflictError
+from app.models.entities import SyncMutation
+from app.repositories.base import dump_entity_columns
+from app.schemas.sync import (
+    PullDeltaEntity, PullResponse, PushErrorDetail, PushMutation,
+    PushMutationResult, PushResponse,
+)
+from app.services.sync_registry import SyncableEntity, get_syncable_entity, registered_entity_types
+# Import for its registration side-effect: populates sync_registry with the
+# entity types this deployment of Harmonix360 actually syncs.
+from app.services import sync_entities  # noqa: F401
+
+logger = logging.getLogger("harmonix360.services.sync")
+
+# See HARMONIX360_ARCHITECTURE.md §13.3: `updated_at` is assigned at flush time,
+# not commit time, so two concurrent transactions can commit out of order
+# relative to their own timestamps. A pull never hands out a row younger than
+# this lag, which is comfortably longer than any single request's transaction
+# lifetime here — bounding, not eliminating, the "missed row" race.
+SYNC_SAFETY_LAG_SECONDS = 2
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+DEFAULT_PAGE_LIMIT = 200
+
+
+def _encode_cursor(positions: Dict[str, Tuple[datetime, int]]) -> str:
+    raw = {k: [v[0].isoformat(), v[1]] for k, v in positions.items()}
+    return base64.urlsafe_b64encode(json.dumps(raw).encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: Optional[str]) -> Dict[str, Tuple[datetime, int]]:
+    if not cursor:
+        return {}
+    raw = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
+    return {k: (datetime.fromisoformat(v[0]), v[1]) for k, v in raw.items()}
+
+
+class SyncService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    # ---------------------------------------------------------------- pull
+
+    async def pull(
+        self, since: Optional[str], entity_types: List[str], tenant_id: str = "default",
+        limit: int = DEFAULT_PAGE_LIMIT,
+    ) -> PullResponse:
+        positions = _decode_cursor(since)
+        entities: List[PullDeltaEntity] = []
+        has_more = False
+
+        for entity_type in entity_types:
+            entry = get_syncable_entity(entity_type)
+            if entry is None:
+                # Unknown entity_type is a client error the router surfaces
+                # (400) before calling us — see app/api/v1/routers/sync.py.
+                continue
+
+            cursor_ts, cursor_id = positions.get(entity_type, (EPOCH, 0))
+            model = entry.model
+
+            stmt = (
+                select(model)
+                .where(
+                    model.tenant_id == tenant_id,
+                    tuple_(model.updated_at, model.id) > tuple_(cursor_ts, cursor_id),
+                    model.updated_at <= server_utc_now() - timedelta(seconds=SYNC_SAFETY_LAG_SECONDS),
+                )
+                .order_by(model.updated_at.asc(), model.id.asc())
+                .limit(limit)
+            )
+            rows = (await self.session.execute(stmt)).scalars().all()
+
+            if len(rows) == limit:
+                has_more = True
+
+            for row in rows:
+                if row.deleted_at is not None:
+                    op = "DELETE"
+                    data = None
+                elif row.created_at > cursor_ts:
+                    op = "CREATE"
+                    data = entry.serialize(row)
+                else:
+                    op = "UPDATE"
+                    data = entry.serialize(row)
+
+                entities.append(PullDeltaEntity(
+                    entity_type=entity_type,
+                    public_id=row.public_id,
+                    op=op,
+                    version=row.version,
+                    updated_at=row.updated_at,
+                    data=data,
+                ))
+                positions[entity_type] = (row.updated_at, row.id)
+
+        return PullResponse(
+            cursor=_encode_cursor(positions),
+            server_time=datetime.now(timezone.utc),
+            has_more=has_more,
+            entities=entities,
+        )
+
+    # ---------------------------------------------------------------- push
+
+    async def push(self, mutations: List[PushMutation], actor_key: str) -> PushResponse:
+        results: List[PushMutationResult] = []
+        for mutation in mutations:
+            replay = await self._find_replay(actor_key, mutation.client_mutation_id)
+            if replay is not None:
+                results.append(replay)
+                continue
+
+            entry = get_syncable_entity(mutation.entity_type)
+            if entry is None:
+                result = PushMutationResult(
+                    client_mutation_id=mutation.client_mutation_id,
+                    outcome="rejected",
+                    entity_type=mutation.entity_type,
+                    entity_id=mutation.entity_id,
+                    error=PushErrorDetail(
+                        code="UNKNOWN_ENTITY_TYPE",
+                        message=f"'{mutation.entity_type}' is not a syncable entity type. "
+                                f"Registered: {registered_entity_types()}",
+                    ),
+                )
+            else:
+                result = await self._apply_one_guarded(entry, mutation, actor_key)
+
+            await self._log_mutation(actor_key, mutation, result)
+            results.append(result)
+
+        return PushResponse(results=results)
+
+    async def _find_replay(self, actor_key: str, client_mutation_id: str) -> Optional[PushMutationResult]:
+        stmt = select(SyncMutation).where(
+            SyncMutation.actor_key == actor_key,
+            SyncMutation.client_mutation_id == client_mutation_id,
+        )
+        row = (await self.session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        return PushMutationResult.model_validate(row.result_json)
+
+    async def _log_mutation(self, actor_key: str, mutation: PushMutation, result: PushMutationResult) -> None:
+        # `entity_id` is client-submitted and only ever meant to be a hashid
+        # public_id (well under 32 chars) — but a buggy or malicious client
+        # could send something longer (a client-generated placeholder id that
+        # never got resolved server-side, say), and this log write must not
+        # be what turns that into an unhandled 500 on an otherwise-correctly-
+        # classified rejected/conflict outcome. Truncated defensively; the
+        # full value the client sent is still in `result.error` when relevant.
+        entity_id = (mutation.entity_id or None)
+        if entity_id and len(entity_id) > 32:
+            entity_id = entity_id[:32]
+        log_row = SyncMutation(
+            client_mutation_id=mutation.client_mutation_id,
+            actor_key=actor_key,
+            entity_type=mutation.entity_type,
+            entity_id=entity_id,
+            op=mutation.op,
+            outcome=result.outcome,
+            result_json=json.loads(result.model_dump_json()),
+        )
+        self.session.add(log_row)
+        await self.session.flush()
+
+    async def _apply_one_guarded(
+        self, entry: SyncableEntity, mutation: PushMutation, actor_key: str
+    ) -> PushMutationResult:
+        """Runs `_apply_one` inside a SAVEPOINT and lets any DB-poisoning
+        exception (a failed INSERT/UPDATE) propagate all the way out of the
+        `async with` block before this catches it. That order matters: if
+        `_apply_one` swallowed the exception internally and returned a normal
+        result, `begin_nested()` would try to RELEASE a savepoint Postgres has
+        already marked aborted, raising a second, unrelated error. Letting the
+        exception cross the `async with` boundary is what makes SQLAlchemy
+        issue ROLLBACK TO SAVEPOINT instead, leaving the session usable again
+        for the next mutation in this batch.
+        """
+        try:
+            async with self.session.begin_nested():
+                return await self._apply_one(entry, mutation, actor_key)
+        except ConflictError as exc:
+            # Defense-in-depth: version_id_col's own flush-time check caught a
+            # race the pre-check in `_apply_one` didn't (two ops in the same
+            # push batch touching the same row, or a genuinely concurrent
+            # request racing this one).
+            envelope = exc.to_envelope()["error"]
+            return PushMutationResult(
+                client_mutation_id=mutation.client_mutation_id,
+                outcome="conflict",
+                entity_type=mutation.entity_type,
+                entity_id=exc.entity_id,
+                error=PushErrorDetail(**envelope),
+            )
+        except (IntegrityError, ValidationError) as exc:
+            return PushMutationResult(
+                client_mutation_id=mutation.client_mutation_id,
+                outcome="rejected",
+                entity_type=mutation.entity_type,
+                entity_id=mutation.entity_id,
+                error=PushErrorDetail(code="VALIDATION_ERROR", message=str(exc)),
+            )
+
+    async def _apply_one(
+        self, entry: SyncableEntity, mutation: PushMutation, actor_key: str
+    ) -> PushMutationResult:
+        service = entry.service_factory(self.session)
+
+        if mutation.op == "CREATE":
+            return await self._apply_create(entry, service, mutation, actor_key)
+
+        current = await service.repo.get_by_public_id(mutation.entity_id)
+        if current is None:
+            return PushMutationResult(
+                client_mutation_id=mutation.client_mutation_id,
+                outcome="rejected",
+                entity_type=mutation.entity_type,
+                entity_id=mutation.entity_id,
+                error=PushErrorDetail(
+                    code="NOT_FOUND",
+                    message=f"{mutation.entity_type} '{mutation.entity_id}' does not exist "
+                            f"or was already deleted",
+                ),
+            )
+
+        if mutation.known_version != current.version:
+            conflict_result = self._conflict_result(mutation, current)
+            # Surfaced, not silently resolved (offline-sync requirement):
+            # write the audit trail now, since we never reach
+            # BaseService.update/soft_delete's own audit call on this path.
+            await service.audit(
+                actor=actor_key,
+                action=f"SYNC_CONFLICT_{mutation.op}",
+                entity_id=current.public_id,
+                before_diff={"known_version": mutation.known_version, "current_version": current.version},
+                reason="client's known_version does not match current server version",
+            )
+            return conflict_result
+
+        if mutation.op == "UPDATE":
+            return await self._apply_update(entry, service, mutation, current, actor_key)
+        return await self._apply_delete(entry, service, mutation, current, actor_key)
+
+    def _conflict_result(self, mutation: PushMutation, current: Any) -> PushMutationResult:
+        return PushMutationResult(
+            client_mutation_id=mutation.client_mutation_id,
+            outcome="conflict",
+            entity_type=mutation.entity_type,
+            entity_id=current.public_id,
+            error=PushErrorDetail(
+                code="VERSION_CONFLICT",
+                message="Entity has been modified since your last known version.",
+                details={
+                    "entity_type": mutation.entity_type,
+                    "entity_id": current.public_id,
+                    "known_version": mutation.known_version,
+                    "current_version": current.version,
+                    "current_state": dump_entity_columns(current),
+                },
+            ),
+        )
+
+    async def _apply_create(
+        self, entry: SyncableEntity, service, mutation: PushMutation, actor_key: str
+    ) -> PushMutationResult:
+        dto = entry.create_schema(**(mutation.payload or {}))
+        entity = entry.model(public_id="temp", **dto.model_dump())
+        created = await service.create(
+            entity, actor=actor_key, action=entry.create_action, after_diff=dto.model_dump(mode="json"),
+        )
+        return PushMutationResult(
+            client_mutation_id=mutation.client_mutation_id,
+            outcome="applied",
+            entity_type=mutation.entity_type,
+            entity_id=created.public_id,
+            version=created.version,
+        )
+
+    async def _apply_update(
+        self, entry: SyncableEntity, service, mutation: PushMutation, current: Any, actor_key: str
+    ) -> PushMutationResult:
+        dto = entry.update_schema(**(mutation.payload or {}))
+        changes = dto.model_dump(exclude_unset=True)
+        for field, value in changes.items():
+            setattr(current, field, value)
+        updated = await service.update(
+            current, actor=actor_key, action=entry.update_action, after_diff=changes,
+        )
+        return PushMutationResult(
+            client_mutation_id=mutation.client_mutation_id,
+            outcome="applied",
+            entity_type=mutation.entity_type,
+            entity_id=updated.public_id,
+            version=updated.version,
+        )
+
+    async def _apply_delete(
+        self, entry: SyncableEntity, service, mutation: PushMutation, current: Any, actor_key: str
+    ) -> PushMutationResult:
+        deleted = await service.soft_delete(current, actor=actor_key, action=entry.delete_action)
+        return PushMutationResult(
+            client_mutation_id=mutation.client_mutation_id,
+            outcome="applied",
+            entity_type=mutation.entity_type,
+            entity_id=deleted.public_id,
+            version=deleted.version,
+        )

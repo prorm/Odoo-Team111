@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (migrate, lint, test)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: harmonix360
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d harmonix360"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+
+      # Required because app/core/rate_limit.py's rate_limiter dependency
+      # (used by every API router, including bookings) hits Redis on every request.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: harmonix360/backend
+
+    env:
+      # Mirrors docker-compose.yml's role split: migrations run as the
+      # postgres superuser (001_initial_schema.py creates harmonix360_app),
+      # the app itself connects as the lower-privileged harmonix360_app role.
+      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@localhost:5432/harmonix360
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/harmonix360
+      REDIS_URL: redis://localhost:6379/0
+      HASHID_SALT: harmonix360-ci-salt
+      JWT_SECRET: harmonix360-ci-jwt-secret
+      MCP_AGENT_API_KEY: harmonix360-ci-mcp-key
+      ENVIRONMENT: development
+      # No SigNoz collector in CI. Point at a closed local port so span export
+      # fails fast (connection refused) instead of burning the job on DNS
+      # resolution retries for the compose-network hostname.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run database migrations (alembic upgrade head)
+        run: uv run alembic upgrade head
+
+      - name: Lint (ruff) — report only, not a merge gate
+        run: uv run ruff check . || true
+
+      - name: Format check (black) — report only, not a merge gate
+        run: uv run black --check . || true
+
+      - name: Run test suite
+        run: uv run pytest -v
