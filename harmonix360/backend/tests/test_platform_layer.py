@@ -17,6 +17,7 @@ from sqlalchemy import delete, text
 
 from app.audit.logger import AuditLogger
 from app.core.redis import redis_client
+from app.middleware.idempotency import cache_key
 from app.models.department import Department
 from app.repositories.audit_query import AuditQueryRepository
 from app.repositories.base import BaseRepository
@@ -191,9 +192,12 @@ async def test_sync_push_does_not_apply_an_unregistered_entity_type(client):
 async def test_idempotency_key_replays_the_cached_response(client):
     """IdempotencyMiddleware caches any 2xx POST response by header value.
 
-    Exercised against /auth/login because with zero domain entities it is the
-    only POST the app exposes — the middleware itself is entity-blind, which is
-    the property under test.
+    Exercised against /auth/login because it was, when this test was written,
+    the only POST the app exposed — the middleware itself is entity-blind,
+    which is the property under test. Phase 4 scoped the cache entry to
+    (method, path, key) so a key reused across two DIFFERENT endpoints cannot
+    answer one with the other's response; replaying the SAME request, tested
+    here, is unchanged.
     """
     key = f"test-{uuid.uuid4().hex}"
     body = {"email": "hr.manager@peoplepay360.com", "password": "hrmanager123"}
@@ -205,7 +209,7 @@ async def test_idempotency_key_replays_the_cached_response(client):
     assert second.status_code == 200
     assert second.json() == first.json()
 
-    await redis_client.delete(f"idempotency:{key}")
+    await redis_client.delete(cache_key("POST", "/api/v1/auth/login", key))
 
 
 # -------------------------------------------- platform layer still imports

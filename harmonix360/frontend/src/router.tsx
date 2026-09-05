@@ -10,6 +10,8 @@ import { EmployeesPage } from './routes/employees/EmployeesPage';
 import { SchedulesPage } from './routes/schedules/SchedulesPage';
 import { AttendancePage } from './routes/attendance/AttendancePage';
 import { TimeOffPage } from './routes/time-off/TimeOffPage';
+import { PayrollPage } from './routes/payroll/PayrollPage';
+import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -48,16 +50,8 @@ const router = createBrowserRouter([
         path: 'time-off',
         element: <TimeOffPage />,
       },
-      {
-        path: 'payroll',
-        element: (
-          <SectionStub
-            name="Payroll"
-            features="A5/A6 Salary Structures & Rules, B5-B8 Payrun, Payslip, PDF, email"
-            phase="Phases 3-5"
-          />
-        ),
-      },
+      { path: 'payroll', element: <PayrollPage /> },
+      { path: 'payroll/:payrunId', element: <PayrunDetailPage /> },
       {
         path: 'reports',
         element: <SectionStub name="Reports" features="A7 Reporting Config, B9 Payroll Dashboard" phase="Phase 6" />,

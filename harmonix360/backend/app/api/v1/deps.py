@@ -10,7 +10,7 @@ methods these dependencies guard. There is no second permission model
 """
 from typing import Callable, Iterable, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.config import settings
@@ -132,3 +132,32 @@ def require_role(*allowed_roles: UserRole) -> Callable:
         return current_user
 
     return role_checker
+
+
+async def require_idempotency_key(
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> str:
+    """400 unless the caller supplied an `Idempotency-Key` header.
+
+    Architecture §6 makes the key REQUIRED on Payrun create and compute, and
+    "required" has to be enforced somewhere: `IdempotencyMiddleware` replays a
+    key it is given but is silent about a request that omits one, which is
+    precisely the double-clicked Compute the key exists to stop. This
+    dependency is that enforcement, declared per-route so the requirement is
+    visible in the OpenAPI schema and at the call site rather than buried in
+    middleware.
+
+    Deliberately only on the two operations §6 names. Making every POST in the
+    product carry a key would train clients to generate one mechanically,
+    which is how a client ends up REUSING one — and a reused key on a
+    different operation is a replayed answer to a question nobody asked.
+    """
+    if not (idempotency_key or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "An 'Idempotency-Key' header is required for this operation so a retried or "
+                "double-clicked request cannot run payroll twice (Architecture §6)."
+            ),
+        )
+    return idempotency_key

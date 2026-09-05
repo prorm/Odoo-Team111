@@ -19,6 +19,7 @@ from app.models.contract import Contract
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.enums import UserRole
+from app.models.payroll import Payrun, PayrunEmployee, Payslip, PayslipLine
 from app.models.salary import SalaryRule, SalaryStructure, SalaryStructureRule
 from app.models.working_schedule import ScheduleLine, WorkingSchedule
 from app.repositories.hr import DepartmentRepository
@@ -106,6 +107,18 @@ async def cleanup_employees():
         if new_ids:
             from app.models.attendance import Attendance
             from app.models.time_off import TimeOffRequest, TimeOffAllocation
+            # Payroll first: a Payslip FKs both the employee and their
+            # contract, so it has to go before either. Defensive rather than
+            # relying on `cleanup_payroll` having run — pytest disposes
+            # fixtures in reverse setup order, and a test may list the two in
+            # either order (same reasoning as cleanup_salary_config's note).
+            doomed_payslips = (
+                await s.execute(select(Payslip.id).where(Payslip.employee_id.in_(new_ids)))
+            ).scalars().all()
+            if doomed_payslips:
+                await s.execute(delete(PayslipLine).where(PayslipLine.payslip_id.in_(doomed_payslips)))
+                await s.execute(delete(Payslip).where(Payslip.id.in_(doomed_payslips)))
+            await s.execute(delete(PayrunEmployee).where(PayrunEmployee.employee_id.in_(new_ids)))
             await s.execute(delete(TimeOffRequest).where(TimeOffRequest.employee_id.in_(new_ids)))
             await s.execute(delete(TimeOffAllocation).where(TimeOffAllocation.employee_id.in_(new_ids)))
             await s.execute(delete(Attendance).where(Attendance.employee_id.in_(new_ids)))
@@ -195,6 +208,42 @@ async def cleanup_salary_config():
                 delete(SalaryStructureRule).where(SalaryStructureRule.salary_rule_id.in_(new_rule_ids))
             )
             await s.execute(delete(SalaryRule).where(SalaryRule.id.in_(new_rule_ids)))
+        await s.commit()
+
+
+@pytest_asyncio.fixture
+async def cleanup_payroll():
+    """Deletes every Payrun (with its selection, payslips and payslip lines)
+    created during a test.
+
+    Same high-water-mark strategy as `cleanup_schedules` and
+    `cleanup_salary_config`. Deleted in dependency order — lines, payslips,
+    selection, run — because these are real foreign keys and Postgres will not
+    take them in any other order.
+
+    Payruns are deleted rather than soft-deleted here. A test's payrun must
+    leave nothing behind: `uq_payslip_payrun_employee` and the
+    `duplicate_payslip` warning both read rows regardless of `deleted_at`, so
+    a tombstoned payslip from a previous run would change the NEXT run's
+    warnings — a test failing because of what an earlier test left behind is
+    the worst kind of flake to chase.
+    """
+    async with AsyncSessionLocal() as s:
+        high_water = (await s.execute(select(Payrun.id).order_by(Payrun.id.desc()).limit(1))).scalar() or 0
+
+    yield
+
+    async with AsyncSessionLocal() as s:
+        new_ids = (await s.execute(select(Payrun.id).where(Payrun.id > high_water))).scalars().all()
+        if new_ids:
+            payslip_ids = (
+                await s.execute(select(Payslip.id).where(Payslip.payrun_id.in_(new_ids)))
+            ).scalars().all()
+            if payslip_ids:
+                await s.execute(delete(PayslipLine).where(PayslipLine.payslip_id.in_(payslip_ids)))
+                await s.execute(delete(Payslip).where(Payslip.id.in_(payslip_ids)))
+            await s.execute(delete(PayrunEmployee).where(PayrunEmployee.payrun_id.in_(new_ids)))
+            await s.execute(delete(Payrun).where(Payrun.id.in_(new_ids)))
         await s.commit()
 
 

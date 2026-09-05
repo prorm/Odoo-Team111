@@ -365,3 +365,288 @@ Potential follow-ups must preserve current policies explicitly:
 organization timezone/calendar configuration, finer-grained hour requests,
 approved-request cancellation with credit, day-by-day absence reporting, and
 admin user/employee linking UI. These are not silently implemented assumptions.
+
+## Phase 4 implemented
+
+Payrun and Payslip (PS B5/B6/B7) — the deterministic payroll engine, and the
+direct consumer of Phase 3's `resolve_salary_structure`. Working branch:
+`phase-4-branch`, cut from `phase-3`.
+
+**Phase 3's arithmetic is not reimplemented anywhere.** `app/services/payroll.py`
+imports and calls `resolve_salary_structure(structure, seed_context)`
+unmodified; there is no second implementation of fixed/percentage/formula in
+this phase, and there must never be one. No `float` is constructed on the
+payroll path — every amount is `Numeric(12,2)`/`Decimal`, stringified across
+the Taskiq payload boundary.
+
+### Spec note, stated rather than assumed
+
+`03_DEVELOPMENT_PLAN.md` is NOT in this checkout (`find` finds nothing; the
+Phase 0-2 handoff above already recorded that "the development-plan file the
+user quoted is outside this checkout"). Phase 4 was therefore built from PRD
+§4 B5-B7, Architecture §6-§7, and — for implementation details — the CODE:
+the Phase 0 model/service/router docstrings in `app/models/payroll.py`,
+`app/core/locks.py` and `app/services/payroll.py`, which encode the plan's
+intent in-repo. Those Phase 0 docstrings say "Phase 5 adds compute/validate/
+mark-paid"; that numbering predates the current phase plan and is stale, not a
+different scope.
+
+### The two semantics that were genuinely open
+
+Everything else was already fixed by Phases 1-3. These two were not, so they
+are stated here rather than buried in a query:
+
+1. **Which structure runs.** `Payrun.salary_structure_id` is NOT NULL and PRD
+   B5 makes structure a wizard step, but Architecture §7 step 2 says "load the
+   CONTRACT's SalaryStructure" — and `Contract.salary_structure_id` is
+   nullable. Both cannot be authoritative. **Decision: the PAYRUN's structure
+   executes**, because `app/models/payroll.py` calls a payrun "one execution of
+   one SalaryStructure over one period" and the code is authoritative. A
+   contract naming a DIFFERENT structure does not silently redirect the
+   computation; it raises an ADVISORY `structure_mismatch` warning so the
+   discrepancy is visible. Pinned by
+   `test_a_contract_naming_another_structure_is_an_advisory_not_a_silent_swap`.
+
+2. **UNPAID_LEAVE_DAYS with an hours-unit leave type.** Phase 2 explicitly
+   refuses to invent an 8-hours-to-a-day conversion. **Decision: count the
+   distinct CALENDAR DAYS of (request ∩ period), deduplicated across requests,
+   regardless of the type's unit** — the unit governs what an ALLOCATION is
+   denominated in, and counting days an absence spans needs no conversion,
+   while summing `duration` across a days-type and an hours-type would add two
+   different units together. `TimeOffRequest.duration` is not read at all, also
+   because a request may straddle the period boundary while its duration covers
+   the whole request.
+
+Three further semantics this phase decided, all documented at the top of
+`app/services/payroll_context.py`:
+
+- **WORKED_DAYS counts DAYS, not hours**: one distinct UTC date with at least
+  one attendance record whose RE-DERIVED status (never the stored column —
+  Phase 2's handoff says a stored status can be stale) is neither `absent` nor
+  `missing_checkout`. A missing-checkout day is NOT counted (its hours are
+  unknown, so asserting either way would be inventing) and raises a BLOCKING
+  warning so a human closes it. Hours are deliberately absent: `WORKED_HOURS`
+  is not in `SEED_CONTEXT_NAMES`, and adding it is a deliberate change to that
+  constant, agreed with whoever authors structures.
+- **Attendance and leave are reported side by side, never netted.** A day that
+  is both attended and on approved leave counts in both numbers; how to combine
+  them is the structure author's formula, not an input this phase hardcodes.
+- **Payslip totals**: a structure declaring GROSS/NET rules is taken at its
+  word (last one wins). The category-sum fallback exists only because both
+  columns are NOT NULL and a structure need not declare either; it never
+  overrides a structure that states its own totals.
+
+### The engine
+
+`app/services/payroll_context.py` — Architecture §7 steps 1, 3 and 6 as
+session-light, HTTP-free functions: `resolve_period_contract` (the ONE active
+contract overlapping the period; uniqueness borrowed entirely from
+`contracts_active_period_overlap_excl`, with the unreachable `>1` branch still
+written and still raising), `build_payroll_context` (the seed dict, exactly
+`SEED_CONTEXT_NAMES`, every value a Decimal), and `warning_checks` (pure, so
+the firewall is testable without a payrun in the database).
+
+`app/services/payroll.py` — `PayrunService` owns the transaction, the lock and
+the writes; it owns no arithmetic. Compute's ordering is load-bearing and
+documented in the method: resolve the public id (smallest possible read) →
+`acquire_entity_lock(session, "payrun", id)` → re-read with
+`populate_existing` → check version and status → delete this run's payslips
+(HARD, so a tombstone cannot occupy `uq_payslip_payrun_employee`) → compute →
+write. A recompute calls `flag_modified(payrun, "status")` so `version` moves
+even when the status letter does not: replacing every payslip is a material
+change, and a client holding the pre-recompute read must be told it is stale.
+
+Warning codes (`Payslip.warnings`, JSONB, `{code, severity, message,
+references}`): BLOCKING — `missing_bank_details`, `missing_checkout`,
+`contract_gap`, `duplicate_payslip`; ADVISORY — `structure_mismatch`,
+`no_attendance`. Validate additionally derives `no_payslip` from persisted
+state (selected employees minus employees with a payslip), so a selected
+employee with no applicable contract blocks finalization however long ago
+Compute ran. Nothing is cached: Revalidate re-reads.
+
+Finality is a one-way ratchet, DRAFT → COMPUTED → VALIDATED → PAID, enforced
+in `_assert_recomputable`/`_assert_editable`/`_assert_payslips_mutable` at the
+SERVICE layer, so a direct call (MCP tool, script) hits the same wall HTTP
+does. There is no "edit this payslip" method by design — a wrong figure is
+fixed by correcting its input or its rule and recomputing.
+
+Compute is NOT fatal on a per-employee failure: an employee with no active
+contract is reported in the response's `skipped` list and everyone else is
+still paid.
+
+### Architecture §6's three obligations
+
+- **Advisory lock** wraps Compute, taken before anything the transaction
+  rewrites is read.
+- **Idempotency-Key REQUIRED** on payrun create and compute, enforced per-route
+  by the new `require_idempotency_key` dependency (the middleware replays a key
+  it is given but is silent about a request that omits one, and "required" has
+  to live somewhere). Deliberately only on those two operations.
+- **`IdempotencyMiddleware` cache key is now scoped to (METHOD, path, key)**
+  rather than the key alone. A client generating one key per user action and
+  sending it with both "create payrun" and then "compute" — the exact shape of
+  the B5 wizard finishing into B6's first action — would otherwise get the
+  create's 201 body back as Compute's answer, with no compute having run. The
+  middleware is still entity-blind; it just no longer answers one endpoint with
+  another's response. `cache_key()` is exported and used by the tests.
+
+### Send Payslips — the enqueue boundary, and nothing past it
+
+`POST /payruns/{id}/send-payslips` validates that the run is PAID, builds a
+JSON-safe payload (public ids, Decimals as `str`) and kicks the Taskiq task BY
+NAME through `taskiq.kicker.AsyncKicker` — `SEND_PAYSLIPS_TASK_NAME =
+"send_payslips"`. Kicked by name on purpose, so this phase neither authors nor
+guesses the signature of Phase 5's worker; that name and payload are the
+contract between the phases. **No PDF or email code exists in this phase and
+no such dependency is imported** — PS B8 is being implemented separately and
+concurrently. A broker failure is a 503, never swallowed.
+
+### RBAC
+
+Every route is `PAYROLL_ROLES`; delete (payrun and payslip) is
+`PAYROLL_ADMIN_ROLES`, matching PRD §3 (Payroll User has CRU, Payroll Manager
+has full CRUD). HR Manager and Employee get 403 on every payroll route
+including reads — the sharpest line in the matrix, tested directly. Employees
+do NOT read their own payslips here: PRD §3 gives that role "own profile,
+attendance, leave balances" and stops; payslip delivery to the employee is
+B8's emailed PDF. Adding a self-service endpoint would be a scope decision,
+not an oversight to quietly correct.
+
+### Endpoints
+
+`GET/POST /payruns/`, `GET/PATCH/DELETE /payruns/{id}`,
+`GET /payruns/eligible-employees` (declared BEFORE `/{public_id}` or it is read
+as a payrun id), `POST /payruns/{id}/compute|validate|mark-paid|send-payslips`,
+`GET /payruns/{id}/validation` (read-only Revalidate),
+`GET /payruns/{id}/payslips`, `GET /payslips/`, `GET/DELETE /payslips/{id}`.
+Transitions are POSTs to named sub-resources, never a PATCH that sets `status`:
+each runs its own preconditions, and a settable status field is an invitation
+to skip them.
+
+### Frontend
+
+`/payroll` (list + PS B5 wizard) and `/payroll/:payrunId` (PS B6 actions, the
+§5.10 firewall panel, payslip table, and PS B7's rule-by-rule "View
+calculation" dialog). The Payroll section stub is gone from `router.tsx`.
+Existing palette and primitives reused; no new design language.
+
+Wizard step 2 offers only ELIGIBLE employees (one active contract covering the
+period — the same predicate Compute uses), and nothing is pre-selected: PS B5
+calls the selection explicit, and a select-all default is how somebody gets
+paid in a run nobody chose to include them in. Exactly one action ever carries
+primary emphasis, driven by the run's status, so a paid run does not show
+Recompute as the loudest control on the screen.
+
+**Money crosses the wire as a STRING and is never parsed into a JavaScript
+number** (`src/types/payroll.ts`): `JSON.parse` on a number would reintroduce,
+in the browser, the IEEE imprecision the whole backend exists to avoid.
+`formatMoney` groups the integer part by string manipulation only.
+
+### Important files
+
+Backend:
+- `app/services/payroll_context.py`: contract resolution, the seed context, the
+  §7 step 6 warning checks. Every decided semantic is documented at the top.
+- `app/services/payroll.py`: PayrunService (wizard/CRUD, compute under the
+  lock, validate, mark paid, enqueue), PayslipService, the immutability wall.
+- `app/schemas/payroll.py`: request/response shapes; no client may send
+  `worked_days`, `gross_amount`, `net_amount`, `warnings` or any line.
+- `app/api/v1/routers/payroll.py`: full routes, RBAC, Idempotency-Key.
+- `app/api/v1/deps.py`: `require_idempotency_key`.
+- `app/middleware/idempotency.py`: (METHOD, path, key) scoping, `cache_key()`.
+- `app/services/attendance.py`: `schedule_expectations` gained an optional
+  `schedule=` override so payroll can honour a contract's schedule override
+  (PS A3) without a second copy of the status policy. Every Phase 2 caller is
+  unchanged.
+- `tests/test_payroll_api.py`, `tests/conftest.py` (`cleanup_payroll`; payroll
+  rows also cleared defensively in `cleanup_employees`).
+- No new Alembic migration: migration 016 already created `payruns`,
+  `payrun_employees`, `payslips` and `payslip_lines` with every column this
+  phase needed, exactly as it did for Phase 3's salary tables.
+
+Frontend: `src/types/payroll.ts`, `src/hooks/usePayroll.ts`,
+`src/routes/payroll/{PayrollPage,PayrunDetailPage,PayrunWizard,PayslipDetail,status}.tsx`.
+
+### Validation record
+
+- **298 backend tests passed** (267 existing + 31 new), real PostgreSQL/Redis,
+  no regressions.
+- **The golden payslip test** (`test_golden_payslip_is_hand_verifiable_end_to_end`)
+  computes a payslip through the REAL HTTP path — real employee, contract,
+  attendance, approved leave, structure, and the real Phase 3 resolver — and
+  asserts it against arithmetic worked out on paper in the docstring: BASIC
+  30000.00 → HRA 12000.00 (40% of BASIC) → GROSS 42000.00 → PT 200.00 → NET
+  41800.00, worked_days 3.00. **Exact `Decimal` equality, no tolerance
+  anywhere.** A second golden test pins the seed context reaching the rules
+  that reference it (PER_DAY/EARNED/DOCKED/NET over WORKED_DAYS and
+  UNPAID_LEAVE_DAYS).
+- Also tested: duplicate compute (recompute REPLACES, never duplicates, proved
+  by changing the data between runs); stale-version compute refused; replayed
+  Idempotency-Key returns the first answer AND provably does not re-run the
+  engine; Idempotency-Key required on create and compute; two concurrent
+  computes (`asyncio.gather`, different keys) — exactly one 200 and one 409,
+  one payslip row read past the API; no applicable contract → skipped with a
+  reason, `no_payslip` blocks Validate; a draft contract does not make anyone
+  payable; overlapping active contracts refused by the constraint and
+  resolution still unique afterwards; partial-period contract → `contract_gap`;
+  missing bank details + missing checkout; duplicate payslip across two runs
+  over one period; structure mismatch advisory; Validate refused then accepted
+  after fix-and-recompute (and NOT accepted by pressing Validate again without
+  recomputing); advisory warnings do not block; Mark Paid requires Validate
+  first; a paid run refuses recompute, edit, delete and payslip delete; Send
+  Payslips refused before payment and enqueued after; eligibility list; empty
+  selection refused; structure with no active rules refused at Compute; RBAC
+  both ways; leave-day de-duplication, period clipping, non-payroll types and
+  pending requests all invisible to the context; and `no_float_reaches_a_payslip`
+  read back from the database column as a `Decimal`.
+- Frontend TypeScript/Vite production build passes.
+- **Live browser verification passed** (local Playwright Chromium, headless,
+  1440×950). Drove the real UI end to end as HR Payroll Manager: login →
+  Payroll → wizard step 1 (structure + period) → step 2 (9 eligible employees
+  listed, select all) → Create → Compute → 9 payslips at 42,000.00 gross /
+  41,800.00 net / 3.00 worked days → "View calculation" showing Basic 30,000.00,
+  Hra 12,000.00, Gross 42,000.00, Pt 200.00, Net 41,800.00 in sequence
+  10/20/30/40/50 with categories → Validate → Mark paid → Send payslips
+  ("Queued 9 payslip(s) for delivery") → every mutating control disabled
+  afterwards. **No page errors and no 5xx responses.**
+  A second pass separately observed the firewall blocking a run: 9 blocking
+  `duplicate_payslip` findings (each naming the payslip it duplicates) with
+  Validate disabled, and a DELETE of the previously paid run refused with 409.
+  An earlier pass observed the `missing_bank_details` path the same way.
+  Screenshots are machine-local under the session scratchpad.
+
+### Environment notes for whoever runs this next
+
+- On this machine ports **5432/6379 are this stack's Postgres/Redis** (the
+  containers `peoplepay360_postgres`/`peoplepay360_redis` publish there
+  directly); the 5544/6380 override the Phase 3 note describes was not needed
+  in this session.
+- `uv run`/`uv sync` FAILED here: OneDrive holds
+  `.venv/Lib/site-packages/harmonix360_backend-0.1.0.dist-info` open and uv
+  aborts with "Access is denied (os error 5)", which also left `simpleeval`
+  (Phase 3's dependency) uninstalled. `uv pip install simpleeval` fixed it, and
+  everything in this phase was run with `./.venv/Scripts/python.exe -m pytest`
+  / `-m uvicorn` directly, which sidesteps uv's sync step entirely.
+- **Port 8000 was already held by an unrelated, older uvicorn** (a Phase 0-era
+  build serving GET-only skeleton payroll routes) that this session did not
+  start and did not kill. The verification backend therefore ran on 8010 with a
+  temporary, uncommitted Vite config proxying to it; that config was deleted
+  afterwards. If payroll endpoints 404 in a browser while curl to the backend
+  works, check which server the dev proxy is actually reaching before
+  suspecting the routes.
+
+### Next work
+
+Phase 5 (PS B8 — payslip PDF + bulk email) consumes the enqueue boundary above:
+register a Taskiq task named `send_payslips` taking the single dict payload
+`{payrun_id, payrun_name, period_start, period_end, payslips: [{payslip_id,
+employee_id, work_email, net_amount, gross_amount}]}` with every amount a
+STRING. Then B9's dashboard and core polish (6-7).
+
+Follow-ups that must stay explicit rather than being silently implemented:
+employee self-service payslip access (deliberately absent — PRD §3), payslip
+explainability narration (PRD §5.6; AI may narrate the persisted tree, never
+produce a figure), proration of a partial-period contract (currently a blocking
+warning, not an automatic calculation), a `WORKED_HOURS` seed input (a
+deliberate change to `SEED_CONTEXT_NAMES`, agreed with structure authors), and
+cancelling a payrun (`PayrunStatus.CANCELLED` exists and no path sets it).

@@ -58,8 +58,18 @@ def derive_attendance_status(
     return AttendanceStatus.PRESENT
 
 
-def schedule_expectations(employee, day):
-    schedule = employee.default_schedule
+def schedule_expectations(employee, day, *, schedule=None):
+    """Expected start time and net hours for one employee on one day.
+
+    `schedule` overrides the employee's default. Attendance itself never
+    passes one — an employee checks in against their own schedule — but
+    payroll does: a Contract may override the schedule for the period it
+    covers (PS A3, `Contract.working_schedule_id`), and the payroll context
+    must derive attendance status against the same schedule the contract
+    being paid actually names. Defaulting to the employee's own schedule
+    keeps every Phase 2 caller unchanged.
+    """
+    schedule = schedule if schedule is not None else employee.default_schedule
     if not schedule or schedule.deleted_at is not None:
         return None, None
     lines = [
