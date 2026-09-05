@@ -85,14 +85,14 @@ export function EmployeeDetailPage() {
           pending="Screens land in Phase 2"
         />
         <SmartButton
-          to={`/time-off?employee=${employee.id}&view=requests`}
+          to={`/time-off?employee=${employee.id}&tab=requests`}
           icon={CalendarDays}
           label="Time off requests"
           count={counts?.time_off_requests}
           pending="Screens land in Phase 2"
         />
         <SmartButton
-          to={`/time-off?employee=${employee.id}&view=allocations`}
+          to={`/time-off?employee=${employee.id}&tab=allocations`}
           icon={CalendarCheck}
           label="Allocations"
           count={counts?.time_off_allocations}

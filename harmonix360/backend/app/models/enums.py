@@ -211,11 +211,9 @@ WEEKDAY_ORDER: dict["Weekday", int] = {day: index for index, day in enumerate(We
 class AttendanceStatus(str, enum.Enum):
     """Outcome of one attendance record (PS B3).
 
-    `corrected` is a terminal marker rather than a state an employee can set:
-    it records that an authorized role edited the record after the fact, which
-    is why Attendance carries `corrected_by` and why corrections stay
-    online-only and role-gated even after offline sync lands (Architecture
-    §8.3).
+    Operational status is server-derived, including after corrections.
+    Correction provenance lives in corrected_by/correction_reason. The legacy
+    half_day/corrected values remain readable, but Phase 2 does not emit them.
     """
 
     PRESENT = "present"
@@ -223,6 +221,8 @@ class AttendanceStatus(str, enum.Enum):
     ABSENT = "absent"
     HALF_DAY = "half_day"
     CORRECTED = "corrected"
+    OVERTIME = "overtime"
+    MISSING_CHECKOUT = "missing_checkout"
 
 
 class TimeOffUnit(str, enum.Enum):

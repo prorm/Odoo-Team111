@@ -35,8 +35,8 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'Employees', href: '/employees', icon: Users, roles: HR_ROLES },
   { name: 'Contracts', href: '/contracts', icon: FileText, roles: HR_ROLES },
-  { name: 'Attendance', href: '/attendance', icon: Clock, roles: HR_ROLES },
-  { name: 'Time Off', href: '/time-off', icon: CalendarDays, roles: HR_ROLES },
+  { name: 'Attendance', href: '/attendance', icon: Clock, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
+  { name: 'Time Off', href: '/time-off', icon: CalendarDays, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
   { name: 'Payroll', href: '/payroll', icon: Wallet, roles: PAYROLL_ROLES },
   { name: 'Reports', href: '/reports', icon: BarChart3, roles: PAYROLL_ROLES },
 ];

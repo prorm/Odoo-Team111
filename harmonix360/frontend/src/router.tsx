@@ -8,6 +8,8 @@ import { ContractsPage } from './routes/contracts/ContractsPage';
 import { EmployeeDetailPage } from './routes/employees/EmployeeDetailPage';
 import { EmployeesPage } from './routes/employees/EmployeesPage';
 import { SchedulesPage } from './routes/schedules/SchedulesPage';
+import { AttendancePage } from './routes/attendance/AttendancePage';
+import { TimeOffPage } from './routes/time-off/TimeOffPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -40,17 +42,11 @@ const router = createBrowserRouter([
       { path: 'contracts', element: <ContractsPage /> },
       {
         path: 'attendance',
-        element: <SectionStub name="Attendance" features="B3 Check In/Out, Worked Hours, corrections" phase="Phase 2" />,
+        element: <AttendancePage />,
       },
       {
         path: 'time-off',
-        element: (
-          <SectionStub
-            name="Time Off"
-            features="A4 Types & Allocations, B4 approve/refuse workflow"
-            phase="Phase 2"
-          />
-        ),
+        element: <TimeOffPage />,
       },
       {
         path: 'payroll',

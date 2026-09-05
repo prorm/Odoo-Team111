@@ -16,7 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Numeric, Text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -61,6 +61,7 @@ class Attendance(AuditedEntity, Base):
     corrector: Mapped[Optional["User"]] = relationship("User", foreign_keys=[corrected_by])
 
     __table_args__ = (
+        CheckConstraint("check_out IS NULL OR check_out >= check_in", name="ck_attendance_interval"),
         # Every read of this table is "this employee, over this period" — the
         # payroll compute path, the employee's own attendance view, and the
         # dashboard's attendance overview alike.

@@ -20,7 +20,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -97,6 +97,8 @@ class TimeOffAllocation(AuditedEntity, Base):
 
     __table_args__ = (
         Index("ix_time_off_allocations_employee_type", "employee_id", "time_off_type_id"),
+        CheckConstraint("allocated >= 0 AND taken >= 0 AND taken <= allocated", name="ck_allocation_balance"),
+        CheckConstraint("valid_to IS NULL OR valid_to >= valid_from", name="ck_allocation_validity"),
     )
 
     @property
@@ -152,4 +154,5 @@ class TimeOffRequest(AuditedEntity, Base):
         # The approver's queue ("everything awaiting me") and the payroll
         # context's "approved leave in this period" both read this shape.
         Index("ix_time_off_requests_status_dates", "status", "date_from", "date_to"),
+        CheckConstraint("date_to >= date_from AND duration >= 0", name="ck_request_dates_duration"),
     )

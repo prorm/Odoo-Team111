@@ -103,6 +103,11 @@ async def cleanup_employees():
     async with AsyncSessionLocal() as s:
         new_ids = (await s.execute(select(Employee.id).where(Employee.id > high_water))).scalars().all()
         if new_ids:
+            from app.models.attendance import Attendance
+            from app.models.time_off import TimeOffRequest, TimeOffAllocation
+            await s.execute(delete(TimeOffRequest).where(TimeOffRequest.employee_id.in_(new_ids)))
+            await s.execute(delete(TimeOffAllocation).where(TimeOffAllocation.employee_id.in_(new_ids)))
+            await s.execute(delete(Attendance).where(Attendance.employee_id.in_(new_ids)))
             await s.execute(delete(Contract).where(Contract.employee_id.in_(new_ids)))
             # Managers first would violate the self-FK, so clear it before
             # deleting anything.
