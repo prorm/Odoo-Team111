@@ -419,13 +419,28 @@ async def test_approved_time_off_counts_only_approved_status(client, dashboard_d
 
 
 async def test_attendance_health_is_schedule_derived_not_hardcoded(client, dashboard_dataset):
+    """Scoped to the fixture's own department — see the note on
+    `test_approved_time_off_counts_only_approved_status`.
+
+    `expected_working_days` is an ORG-WIDE sum with no department filter, so an
+    absolute assertion against the unfiltered number holds only on a database
+    containing nothing but this fixture. It stopped holding when the demo seed
+    grew an active employee with a working schedule (the Loss-of-Pay scenario),
+    which is a perfectly ordinary thing for a seed to contain and not a
+    dashboard defect: the query counted the extra employee because the extra
+    employee exists.
+
+    Within Engineering: alice 5 expected / 3 attended, bob 5 / 5, and
+    dave/erin/frank contribute 0 / 0 (no schedule). 8 of 10 = 80.00%.
+    """
     resp = await client.get(
-        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
+        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}"
+        f"&department_id={dashboard_dataset['engineering']}",
         headers=PAYROLL_MANAGER,
     )
     body = resp.json()
-    assert body["attendance"]["expected_working_days"] == 15
-    assert body["attendance"]["attended_days"] == 12
+    assert body["attendance"]["expected_working_days"] == 10
+    assert body["attendance"]["attended_days"] == 8
     assert Decimal(body["kpis"]["attendance_health_pct"]) == Decimal("80.00")
 
 
