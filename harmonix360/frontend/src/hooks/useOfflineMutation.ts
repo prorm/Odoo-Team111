@@ -1,10 +1,12 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  deleteCachedEntity, enqueueOutbox, getCachedEntities, makeCacheEntry, putCachedEntity,
+  deleteCachedEntity, enqueueOutbox, getCachedEntities, getPendingOutbox, makeCacheEntry,
+  putCachedEntity, type OutboxMutation,
 } from '@/lib/offline-db';
+import { fetchApi } from '@/lib/api-client';
 import { reachability } from '@/lib/reachability';
-import { runSync } from '@/lib/sync-engine';
+import { onSyncSettled, runSync } from '@/lib/sync-engine';
 
 /**
  * Generic offline-capable CRUD for ANY entity_type registered on both sides
@@ -50,6 +52,10 @@ export function useOfflineMutation(entityType: string) {
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['offline', entityType] });
+    // The outbox view too, or a mutation queued with no network would sit
+    // there invisibly: `usePendingOfflineMutations` reads IndexedDB with
+    // staleTime Infinity, so nothing else would ever make it re-read.
+    queryClient.invalidateQueries({ queryKey: ['offline-pending', entityType] });
   }, [queryClient, entityType]);
 
   const flushIfOnline = useCallback(() => {
@@ -118,4 +124,85 @@ export function useOfflineMutation(entityType: string) {
   );
 
   return { create, update, remove };
+}
+
+
+/**
+ * The mutations for one entity type that are queued and not yet accepted by
+ * the server. This is what makes offline work VISIBLE: a check-in recorded
+ * with no network has to appear somewhere, or the person taps the button
+ * again and the honest answer to "did that save?" is a shrug.
+ *
+ * Reads the existing outbox store; it adds no state of its own. It re-reads
+ * whenever the sync engine settles, so a row disappears from "waiting" at the
+ * moment the server accepts it rather than on the next poll.
+ */
+export function usePendingOfflineMutations(entityType: string) {
+  const queryClient = useQueryClient();
+
+  useEffect(() => onSyncSettled(() => {
+    queryClient.invalidateQueries({ queryKey: ['offline-pending', entityType] });
+    queryClient.invalidateQueries({ queryKey: ['offline', entityType] });
+  }), [queryClient, entityType]);
+
+  return useQuery<OutboxMutation[]>({
+    queryKey: ['offline-pending', entityType],
+    queryFn: async () => (await getPendingOutbox()).filter((m) => m.entity_type === entityType),
+    staleTime: Infinity,
+    // Same reason as useOfflineEntities: this reads IndexedDB, not the
+    // network, so TanStack's default of pausing queries while offline would
+    // hide exactly the rows it exists to show.
+    networkMode: 'always',
+  });
+}
+
+
+/**
+ * Reference data a form needs in order to be usable offline, persisted in the
+ * SAME IndexedDB cache store the sync engine uses.
+ *
+ * The leave-request form cannot be filled in without the list of leave types,
+ * and that list is a live read (`/time-off-types/lookup`). With no network the
+ * dropdown is empty, and "you may submit a request offline" is then false in
+ * the only way that matters.
+ *
+ * This is NOT a third syncable entity. Architecture §8.3 registers exactly two
+ * (`attendance`, `time_off_request`) and `SYNCED_ENTITY_TYPES` still names
+ * exactly those; `/sync/pull` is never asked for this. It is a read-through
+ * cache of reference data under its own key, written whenever the online read
+ * succeeds and read back when it fails. Types are configuration, not somebody's
+ * records — there is nothing here to conflict, reconcile or push.
+ */
+export function useOfflineReferenceList<T extends { id: string }>(
+  cacheKey: string,
+  path: string,
+  options: { enabled?: boolean } = {},
+) {
+  return useQuery({
+    queryKey: ['offline-reference', cacheKey],
+    enabled: options.enabled ?? true,
+    // Reads the network first and IndexedDB second; pausing it while offline
+    // would skip the fallback that is the entire point.
+    networkMode: 'always',
+    queryFn: async (): Promise<{ items: T[] }> => {
+      try {
+        const fresh = await fetchApi<{ items: T[] }>(path);
+        await Promise.all(
+          fresh.items.map((item) =>
+            putCachedEntity(
+              makeCacheEntry(cacheKey, item.id, 0, new Date().toISOString(),
+                item as unknown as Record<string, unknown>),
+            ),
+          ),
+        );
+        return fresh;
+      } catch (error) {
+        const cached = await getCachedEntities(cacheKey);
+        // Nothing cached and no network: re-raise, so the form shows the real
+        // failure rather than an empty dropdown with no explanation.
+        if (cached.length === 0) throw error;
+        return { items: cached.map((row) => row.data as unknown as T) };
+      }
+    },
+  });
 }

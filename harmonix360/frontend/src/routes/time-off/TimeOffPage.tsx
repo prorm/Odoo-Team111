@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -15,9 +14,12 @@ import {
 } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useHrCollection, useHrWrite } from "@/hooks/useAttendanceTimeOff";
+import {
+  useOfflineMutation,
+  useOfflineReferenceList,
+  usePendingOfflineMutations,
+} from "@/hooks/useOfflineMutation";
 import { HR_ROLES, hasRole } from "@/types/enums";
-import { fetchApi } from "@/lib/api-client";
-import type { PaginatedResponse } from "@/types/common";
 import type {
   TimeOffType,
   TimeOffAllocation,
@@ -53,6 +55,22 @@ export function TimeOffPage() {
   const resource = `time-off-${section}`;
   const records = useHrCollection<Row>(resource, employee, offset);
   const write = useHrWrite(resource);
+  // Architecture §8.3: an Employee SUBMITTING their own request is syncable;
+  // approving or refusing one is not, and never will be — approval debits a
+  // live allocation inside a transaction, and a device holding a stale copy
+  // of that balance must not get to make the decision.
+  // Warm the leave-type cache from the PAGE, not only from the form. The form
+  // mounts on demand, so a person who never opened it while online would find
+  // an empty dropdown the first time they tried offline — which is the one
+  // moment it needs to work. Same query key as the form's, so this is one
+  // fetch, not two.
+  useOfflineReferenceList<TimeOffType>(
+    "time_off_type_ref",
+    "/time-off-types/lookup?limit=200",
+    { enabled: section !== "types" },
+  );
+  const offlineRequests = useOfflineMutation("time_off_request");
+  const queuedRequests = usePendingOfflineMutations("time_off_request");
   const [editing, setEditing] = useState<Row>();
   const [open, setOpen] = useState(false);
   const [decision, setDecision] = useState<{
@@ -131,6 +149,26 @@ export function TimeOffPage() {
         </p>
       )}
       <ErrorMessage error={records.error} />
+      {section === "requests" && (queuedRequests.data?.length ?? 0) > 0 && (
+        <div
+          data-testid="time-off-pending-sync"
+          className="rounded-lg border border-amber-800/50 bg-amber-950/25 p-3 text-sm text-amber-200"
+        >
+          <p className="font-medium">
+            {queuedRequests.data!.length} request
+            {queuedRequests.data!.length === 1 ? "" : "s"} waiting to sync
+          </p>
+          <ul className="mt-1 space-y-0.5 text-xs opacity-90">
+            {queuedRequests.data!.map((row) => (
+              <li key={row.client_mutation_id}>
+                {String(row.payload?.date_from ?? "")} to{" "}
+                {String(row.payload?.date_to ?? "")} — saved on this device, not
+                yet on the server
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {!open && !decision && !deleting && <ErrorMessage error={write.error} />}
       {records.isLoading ? (
         <p>Loading time off…</p>
@@ -339,6 +377,16 @@ export function TimeOffPage() {
               pending={write.isPending}
               error={write.error}
               onSave={async (values) => {
+                if (!editing && !hr && section === "requests") {
+                  await offlineRequests.create(
+                    values as Record<string, unknown>,
+                  );
+                  setOpen(false);
+                  setMessage(
+                    "Request submitted. It will sync automatically if you are offline.",
+                  );
+                  return;
+                }
                 await write.mutateAsync({
                   path: editing?.id ?? "",
                   method: editing ? "PATCH" : "POST",
@@ -481,14 +529,13 @@ function TimeOffForm({
   const [start, setStart] = useState(alloc?.valid_from ?? req?.date_from ?? "");
   const [end, setEnd] = useState(alloc?.valid_to ?? req?.date_to ?? "");
   const [reason, setReason] = useState(req?.reason ?? "");
-  const types = useQuery({
-    queryKey: ["time-off-types", "picker"],
-    queryFn: () =>
-      fetchApi<PaginatedResponse<TimeOffType>>(
-        "/time-off-types/lookup?limit=200",
-      ),
-    enabled: section !== "types",
-  });
+  // Cached in IndexedDB so the form is fillable with no network. Not a
+  // syncable entity — see `useOfflineReferenceList`.
+  const types = useOfflineReferenceList<TimeOffType>(
+    "time_off_type_ref",
+    "/time-off-types/lookup?limit=200",
+    { enabled: section !== "types" },
+  );
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const values =

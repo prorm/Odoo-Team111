@@ -1,16 +1,18 @@
 # PeoplePay360 — Roadmap
 
-The core (Phases 0–7) is **complete and demoable**. Everything below Phase 7 is
-the differentiation layer, which PRD §6 puts in P1–P3 and which is explicitly
-not allowed to be built by cutting corners in P0.
+The core (Phases 0–7) is **complete and demoable**, and Phase 8 (offline
+attendance and leave sync) has landed on top of it. Everything below is the
+differentiation layer, which PRD §6 puts in P1–P3 and which is explicitly not
+allowed to be built by cutting corners in P0.
 
 > The authoritative record of what is built, and how, is `progress.md`, by
 > dated section. Where this file and `progress.md` disagree, `progress.md`
 > wins and this file is stale. Every "DONE" below is checkable against a
 > `progress.md` section and a commit on `origin/dev`.
 
-Last updated at `phase-7-closeout`, merging `phase-5-payslip-pdf-email` and
-`phase-7-prep` onto `origin/dev` tip `cd823a1`.
+Last updated on `phase-8-offline`, which branches from `phase-7-closeout`
+(itself `origin/dev` tip `cd823a1` plus `phase-5-payslip-pdf-email` and
+`phase-7-prep`). Neither branch is on `origin/dev` yet.
 
 ---
 
@@ -282,41 +284,70 @@ point at somebody else.
 
 ---
 
-## 7. Phase 8 — Offline sync (PS §5.3, P1)
+## 7. Delivered — offline sync (Phase 8, PS §5.3, P1)
 
-**Status: NOT STARTED.** The engine is built and dormant; the registry
-(`app/services/sync_entities.py`) is deliberately empty, and the frontend's
-IndexedDB outbox (`src/lib/offline-db.ts`) is present and unwired.
+**Status: DONE.** `docs/offline-sync-conflicts.md` carries the design notes;
+`progress.md` carries the dated section.
 
-### 7.1 Entities to register
+### 7.1 What is registered
 
-Exactly two, per Architecture §8.3:
+Exactly two entities, per Architecture §8.3, and both **CREATE-only**:
 
-- `attendance` — **check-in/check-out creation only.** Corrections stay
-  online-only and role-gated: an offline device may record that someone
-  arrived, never rewrite what was already recorded.
-- `time_off_request` — **creation only**, never approval or refusal. Approval
-  debits a balance inside a transaction against a live allocation; that
-  decision cannot be made on a device holding a stale copy.
+| Entity | Syncable | Never syncable |
+|---|---|---|
+| `attendance` | check-in / check-out **creation** | corrections, deletion |
+| `time_off_request` | **submission** | approval, refusal, edit, deletion |
 
-Payroll, Salary Rule and Contract are **never** registered. Offline capability
-is opt-in by registry membership, and payroll mutations are never opted in.
+Payroll, Salary Rule and Contract are not registered and never will be.
+`tests/test_platform_layer.py` asserts the **whole** registered set, not
+membership, so adding a third entity has to break a test and be argued for.
 
-### 7.2 Conflict policy
+### 7.2 What registration actually required
 
-Client mutation ids plus the existing `sync_mutations` idempotency table mean a
-retried mutation produces exactly one row. Because both registered operations
-are **creates**, the update-conflict path (`Keep Mine` / `Overwrite`) is
-largely unreachable by construction — which is the point of the narrow
-registration, and should be documented as such rather than left as an untested
-branch.
+The dormant module predicted that registering an entity would be "one
+`register_syncable_entity(...)` call and nothing else". That held for
+AssetFlow's `note` and `asset`, which had no domain rules. It did not hold
+here, and the difference is the substance of the phase: left to itself the
+generic engine would have written rows with **no authorization** (an employee
+could post attendance for anyone), **no derivation** (`worked_hours`, `status`
+and leave `duration` are server-computed), **served every row to everyone**
+(pull filtered by tenant and cursor only), and **accepted UPDATE** — which is
+what an attendance correction is, and `AttendanceService.correct` guards it
+with `require_hr`.
 
-### 7.3 Client outbox behaviour
+Each of those is a second, looser path to the database, which §9 forbids. So
+`SyncableEntity` gained three optional fields — `allowed_ops`,
+`create_handler`, `scope_filter` — each defaulting to the previous behaviour.
+The engine's cursor, savepoints, `sync_mutations` idempotency, conflict
+envelope, audit write and both HTTP routes are untouched. Creates now run
+through the entity's own service method with the authenticated principal: the
+same method, the same gate and the same audit row the REST router reaches.
 
-Queue offline, replay on reconnect through `/sync/push`, reconcile from
-`/sync/pull`. The rule that matters: the sync engine terminates in the **same
-service methods** the REST routers call, with the same `require_role` gate and
-the same audit write. There is no second path to the database (Architecture §9).
+### 7.3 Conflict policy
+
+**The version-conflict path is unreachable for both entities**, by
+construction rather than by luck: a CREATE has no `known_version` to disagree
+with, and neither entity accepts UPDATE or DELETE. `ConflictModal` therefore
+never opens on their account. The machinery is kept because it is what an
+UPDATE-capable registration would need, and widening `allowed_ops` is now the
+explicit decision that would make it live.
+
+What replaces conflicts for creates is idempotency: `(actor_key,
+client_mutation_id)` in `sync_mutations`, with the client id generated when a
+mutation is **queued** rather than when it is sent, so every retry of one
+queued mutation carries one id. Verified by counting rows in PostgreSQL, and
+in the browser across a real kill-network cycle.
+
+### 7.4 Known limits, found by running it
+
+- **No service worker**, so a hard page load or a cold start while offline
+  fails. In-app navigation and every already-loaded screen keep working. This
+  is an offline-capable data layer, not an installable PWA.
+- **A rejected mutation is only logged to the console.** It is not silently
+  lost — it leaves the "waiting to sync" list and the server has an audit
+  trail — but a queued check-in the server refuses deserves a message.
+- **Offline check-ins are timestamped by the device.** Unavoidable, consistent
+  with PRD §8, and everything derived from the timestamp is still server-owned.
 
 ---
 
@@ -405,4 +436,6 @@ with a reason.
 | **No employee self-service payslip access** | PRD §3 gives Employee "own profile, attendance, leave balances" and stops. B8 delivers payslips by email, not by an endpoint. Adding one is a scope change needing its own §5 row. | `docs/rbac-audit.md` |
 | **`WORKED_HOURS` is not a seed input** | `SEED_CONTEXT_NAMES` is a deliberate, agreed set. Adding to it changes what every structure author can reference. | Phase 4 notes |
 | **Performance is unmeasured** | No load test, no query-plan review. Demo-sized data only. | §6.6 |
+| **No service worker** | Offline works for data, not for a cold start: a hard reload with no network gets the browser's error page. A stale cached shell has its own failure modes, so this is deliberate, not forgotten. | §7.4 |
+| **A rejected offline mutation is only logged** | The sync engine drops it from the outbox and writes it to the console instead of telling the person what was refused and why. | `docs/offline-sync-conflicts.md` |
 | **Organisation timezone is UTC, hardcoded** | A configurable organisation calendar is real work with real payroll consequences (late/overtime thresholds, period boundaries). Not silently assumed away — stated. | Phase 2 notes |

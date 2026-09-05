@@ -1,6 +1,6 @@
 # PeoplePay360 progress and handoff
 
-Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-7-closeout (Phase 7 gate CLOSED).
+Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-8-offline (Phase 7 gate CLOSED; Phase 8 landed).
 Product name is PeoplePay360; source folders retain the Harmonix360 base name.
 
 ## Start here
@@ -1843,3 +1843,290 @@ existing dormant `offline-db.ts` / `useOfflineMutation` / `OfflineBanner` onto
 those two flows. Do not register any payroll-adjacent entity, and do not build
 new sync infrastructure - the engine, the `sync_mutations` idempotency table and
 the IndexedDB outbox are all already present and tested.
+
+---
+
+## 2026-09-05 — Phase 8: offline attendance and leave sync (PS §5.3)
+
+### Gate check, and where this branch is based
+
+Phase 7's gate is **closed** — re-read from its own final report, immediately
+above: 349 backend tests passing, 395/395 RBAC cells matching Architecture §5,
+both PRD §7 scenarios run end to end with no manual DB edits, 29/29 browser
+checks, both required failure modes surfacing in the UI. Phase 8 was therefore
+started rather than stopped.
+
+**Branch base, stated because it is a deliberate departure from the usual
+protocol.** `origin/dev` is still `cd823a17799c7d651066a51053e8db3e296ff3a2` —
+neither Phase 5 nor Phase 7 has been merged into it. Branching `phase-8-offline`
+from `origin/dev` would have put this work on a tree where the gate it depends
+on does not exist, which is the same mistake `phase-6-dashboard` made when it
+forked from `phase-3` (see "Phase 6 integrated with Phase 4" above). So:
+
+```
+origin/dev             cd823a1
+phase-7-closeout       84e8c0f   (cd823a1 + phase-5 + phase-7-prep + closeout)
+phase-8-offline        84e8c0f   <- branched here
+```
+
+Both branches are pushed. Merging them into `dev` in order — `phase-7-closeout`
+first, then `phase-8-offline` — is a fast-forward.
+
+### What was registered
+
+Exactly two entities in `app/services/sync_entities.py`, per Architecture §8.3,
+and both **CREATE-only**:
+
+| Entity | Syncable | Never syncable |
+|---|---|---|
+| `attendance` | check-in / check-out **creation** | corrections, deletion |
+| `time_off_request` | **submission** | approval, refusal, edit, deletion |
+
+No payroll-adjacent entity is registered, and
+`test_sync_registry_holds_exactly_the_two_phase_8_entities` asserts the **whole
+set** rather than membership — adding a third has to break a test and be argued
+for, rather than slipping in.
+
+### Registration was not one line each, and that is the finding
+
+The dormant module predicted that "registering an entity is one
+`register_syncable_entity(...)` call in this file and nothing else". That was
+true of AssetFlow's `note` and `asset`, which had no domain rules. It is false
+for these two, and the difference is the substance of this phase.
+
+Left as it was, the generic engine would have:
+
+1. **Written rows with no authorization.** `_apply_create` built
+   `model(**payload)` and called `BaseService.create`. The real method,
+   `AttendanceService.create_attendance`, calls `employee_for(...)` — which is
+   what enforces §5's "Attendance (own)". Through the generic path **an
+   Employee could have posted attendance for anybody in the company.**
+2. **Written rows with no derivation.** `worked_hours` and `status` are
+   computed by `AttendanceService._compute`; leave `duration` by
+   `request_duration`. The generic path would have stored whatever the client
+   sent, or NULL.
+3. **Served every row to everyone.** `SyncService.pull` filtered by tenant and
+   cursor only. With no per-entity scoping, **any authenticated login pulling
+   `attendance` would have received the whole organisation's attendance.**
+4. **Accepted UPDATE and DELETE.** An attendance correction *is* an UPDATE.
+   `AttendanceService.correct` guards it with `require_hr`; the generic UPDATE
+   path does not. The correction gate would have been bypassed simply by
+   choosing a different verb.
+
+Every one of those is a *second, looser path to the database*, which
+Architecture §9 forbids in as many words. Registering the entities without
+addressing them would have satisfied the letter of "register two entities" and
+broken the architecture the registration exists inside.
+
+### What changed to fix it, and what deliberately did not
+
+`SyncableEntity` gained **three optional fields**, each defaulting to the
+behaviour the engine already had, so no existing registration changes meaning:
+
+- `allowed_ops` — which operations this entity accepts. Both new entities are
+  `frozenset({"CREATE"})`. `push` rejects anything else with
+  `OPERATION_NOT_SYNCABLE` before the apply path runs at all.
+- `create_handler` — applies a CREATE through the entity's **own service
+  method** with the authenticated principal. Same method, same gate, same
+  derivation and same audit row the REST router reaches.
+- `scope_filter` — extra WHERE criteria for pull. HR sees everything; an
+  Employee sees rows whose `employee_id` matches the **signed** claim; a login
+  with neither gets `false()` — no rows rather than all rows, because the
+  direction a scoping bug fails in matters more than how likely it is.
+
+`SyncService.push` now takes the `CurrentUser` rather than just an email
+(`actor_key` is still the email, so the idempotency key means exactly what it
+did), `pull` takes the user and **refuses to serve an entity that registers a
+scope filter without one** rather than silently serving it unscoped, and
+`_apply_one_guarded` catches `HTTPException` so a domain service's 403/409/422
+becomes a per-mutation `rejected` outcome instead of a 500 that would abort the
+whole batch.
+
+**Untouched:** the cursor and its safety lag, savepoint-per-mutation, the
+`sync_mutations` idempotency table and replay, the conflict envelope, the audit
+write, both HTTP routes, and the entire frontend sync engine. No new sync
+infrastructure was built; what changed is that a registration can now state the
+rules its entity already has.
+
+### Idempotency — the property PRD §7 actually measures
+
+Verified twice, in two different ways.
+
+**In PostgreSQL** (`test_retried_mutation_id_creates_exactly_one_row`): the same
+`client_mutation_id` pushed three times — twice alone and once inside a batch
+alongside an unrelated mutation — produces **exactly one row**, counted with
+`SELECT count(*)`, not inferred from the response. The replay also returns the
+**first result verbatim**, so a client that never saw the original response
+reconciles against the id it would have had, rather than being told its row does
+not exist.
+
+`test_idempotency_is_scoped_to_the_actor` pushes the *same* id as two different
+people and gets two rows, because the key is `(actor_key, client_mutation_id)` —
+a key that ignored the actor would let one person's retry return another
+person's result.
+
+**In a browser**, across a real kill-network cycle — see the demo below.
+
+### The conflict edge case, documented
+
+`docs/offline-sync-conflicts.md`. The short version: **the version-conflict path
+is unreachable for both registered entities**, by construction rather than by
+luck. A `conflict` outcome is produced in exactly one place, and two facts put
+both entities on the other side of it — a CREATE has no `known_version` to
+disagree with, and neither entity accepts UPDATE or DELETE. `ConflictModal`
+therefore never opens on their account.
+
+The document says why the machinery is kept anyway (it is what an UPDATE-capable
+registration would need, and widening `allowed_ops` is now the explicit decision
+that makes it live), why "corrections stay online-only" is the right cut rather
+than a shortcut (`Keep Mine` on an attendance correction means "the device that
+was offline longest wins", which is exactly backwards), and the six edge cases
+that **are** reachable: retried mutations, terminal rejections, two check-ins in
+one day, device clock skew, a stale leave balance, and an auto-approving leave
+type that debits at reconnect.
+
+### Frontend wiring — the dormant Phase 0 machinery, switched on
+
+No new client infrastructure. `SYNCED_ENTITY_TYPES` goes from `[]` to the two
+registered types, and two flows move onto the existing outbox:
+
+- **Employee check-in and own attendance entry** → `useOfflineMutation.create`.
+  HR entry for someone else, corrections and deletes stay on the REST path.
+- **Employee leave-request submission** → the same, for `time_off_request`.
+  Approval and refusal stay on REST.
+
+`OfflineBanner` and `ConflictModal` were already mounted in `AppShell` and
+needed no change. Added: `usePendingOfflineMutations`, a read over the existing
+outbox store, and two "N waiting to sync" panels — because a check-in recorded
+with no network has to appear *somewhere*, or the person taps the button again
+and the honest answer to "did that save?" is a shrug.
+
+**The clock trade-off, stated rather than buried.** An offline check-in is
+timestamped by the **device**: the check-in happened when the person arrived,
+not when their phone found a signal. Following the hook's existing design, the
+employee check-in always goes through the outbox — online or offline — so there
+is one code path rather than a fast REST path and a parallel offline queue. The
+cost is that an online check-in is now client-timestamped too. The server still
+authorizes it and still derives `worked_hours` and `status`, and PRD §8 already
+states attendance is manually entered and corrected with no hardware
+attestation, so this is consistent with the product's assumptions — but it is a
+change from the server-clocked `POST /attendance/check-in`, and worth knowing.
+
+### The offline demo scenario, run end to end
+
+`harmonix360/frontend/scripts/offline-demo.mjs`, in a real Chromium with the
+network cut at the **browser** (Playwright offline mode), so the app takes the
+same path a phone in a basement would. **11/11 checks passed, 0 page errors.**
+
+```
+server rows before: attendance=9, requests=4
+PASS  OfflineBanner appears once the app really cannot reach the server
+PASS  Check-in is accepted offline and shown as waiting to sync
+PASS  Nothing reached the server while offline — server still 9
+PASS  Leave request queued offline
+PASS  OfflineBanner clears on reconnect
+PASS  Outbox drained after reconnect
+PASS  Exactly one attendance row reached the server — no duplicate — 9 -> 10
+PASS  Exactly one time-off request reached the server — no duplicate — 4 -> 5
+PASS  Re-running sync creates nothing further — still 10
+```
+
+Row counts are read back from the API afterwards, so a duplicate would show up
+as a **row**, not merely as a missing banner.
+
+### Two limitations the demo found, and what was done about each
+
+**A hard page load while offline fails.** There is no service worker, so the app
+shell is not cached: in-app navigation works offline and every loaded screen
+keeps working, but pressing reload with no signal gets the browser's error page.
+That is the difference between an offline-capable data layer, which this is, and
+an installable PWA, which this is not. A service worker is not sync
+infrastructure and has its own failure modes — a stale shell served to someone
+who has just been given a fix is worse than an error page — so it is on the
+roadmap, and **the demo asserts the current behaviour explicitly** so that the
+day someone adds one, the assertion fails and the limitation is removed
+deliberately.
+
+**The leave-request form was unusable offline.** Its leave-type dropdown is a
+live read (`/time-off-types/lookup`), so with no network it was empty and "you
+may submit a request offline" was false in the only way that matters. Fixed with
+`useOfflineReferenceList`, which caches the lookup into the **same IndexedDB
+store the sync engine already uses**, under its own key, written when the online
+read succeeds and read back when it fails. It is **not** a third syncable
+entity: `SYNCED_ENTITY_TYPES` still names exactly two and `/sync/pull` is never
+asked for it. Leave types are configuration, not somebody's records — there is
+nothing to conflict, reconcile or push.
+
+That fix needed a second pass. Requesting the list only from the *form* was not
+enough: the form mounts on demand, so someone who had never opened it online had
+nothing cached at exactly the moment it mattered. The page requests it too, on
+the same query key, so simply visiting Time Off while online warms the cache.
+
+### Files created
+
+- `harmonix360/backend/tests/test_offline_sync.py` — 13 tests.
+- `harmonix360/frontend/scripts/offline-demo.mjs` — the browser demo above.
+- `docs/offline-sync-conflicts.md` — conflict analysis and edge cases.
+
+### Files modified
+
+- `app/services/sync_entities.py` — the two registrations (was empty).
+- `app/services/sync_registry.py` — `allowed_ops`, `create_handler`,
+  `scope_filter`, all optional and all defaulting to previous behaviour.
+- `app/services/sync.py` — honours those three; `push`/`pull` take the
+  principal; `HTTPException` becomes a per-mutation rejection.
+- `app/api/v1/routers/sync.py` — passes `current_user` through.
+- `tests/test_platform_layer.py` — the registry test, see below.
+- Frontend: `src/lib/sync-engine.ts` (the two entity types),
+  `src/hooks/useOfflineMutation.ts` (`usePendingOfflineMutations`,
+  `useOfflineReferenceList`, and an invalidation fix),
+  `src/routes/attendance/AttendancePage.tsx`,
+  `src/routes/time-off/TimeOffPage.tsx`.
+- `ROADMAP.md`, `progress.md`.
+
+### The test that changed, and why it is stronger
+
+`test_sync_registry_is_empty_until_phase_8` asserted `registered_entity_types()
+== []`. Its own docstring anticipated this phase, naming the two entities that
+would replace the empty list. It is now
+`test_sync_registry_holds_exactly_the_two_phase_8_entities`, and it asserts the
+**whole set** plus an explicit disjointness check against ten forbidden entity
+names — payruns, payslips, payslip lines, salary rules and structures,
+contracts, employees, allocations, types and users. The old test could only
+catch "something was registered"; this one catches "the wrong thing was
+registered", which is the failure that would actually matter.
+
+One frontend bug was found and fixed by the demo rather than by review:
+`useOfflineMutation`'s `invalidate()` refreshed the entity cache but not the
+outbox view, so a mutation queued with no network sat there invisibly —
+`usePendingOfflineMutations` reads IndexedDB with `staleTime: Infinity` and
+nothing else would ever have made it re-read.
+
+### Validation record
+
+- **Backend suite: 362 passed**, zero failures or skips, in ~3 minutes, on a
+  freshly created database migrated to `019_payslip_delivery` and seeded. That
+  is Phase 7's 349 plus this phase's 13.
+- **RBAC audit: 395/395 cells still match Architecture §5.** Re-run because
+  `pull` and `push` changed signature and the sync routes are in the audit.
+- **Offline demo: 11/11 checks, 0 page errors**, across a real
+  kill-network → mutate → reconnect cycle in Chromium.
+- **Frontend: `npm run build` passes** `tsc -b` and the Vite production build.
+  The pre-existing large-bundle advisory remains.
+- Same container-based procedure as Phase 7 (see its environment notes):
+  WeasyPrint's native libraries mean the suite must run inside
+  `peoplepay360_backend`, and `pip install -r requirements-dev.txt` does not
+  survive a container recreate.
+
+### Next work
+
+Phase 9 (AI and MCP) and Phase 10 (realtime, observability) — both P2, both
+dormant, both described concretely in `ROADMAP.md` §8 and §9. The invariant that
+governs Phase 9 is worth repeating here because it is the one that must not
+slip: **AI is architecturally incapable of writing to `Payslip`/`PayslipLine`**,
+and an MCP session is bound to an authenticated user's role, wrapping the same
+`require_role`-guarded service methods the REST routers call.
+
+Before either: merge `phase-7-closeout` and then `phase-8-offline` into `dev`.
+Both are fast-forwards, and until that happens `origin/dev` does not contain
+Phase 5, Phase 7 or Phase 8.

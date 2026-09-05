@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select, tuple_
 from sqlalchemy.exc import IntegrityError
@@ -68,8 +69,12 @@ class SyncService:
 
     async def pull(
         self, since: Optional[str], entity_types: List[str], tenant_id: str = "default",
-        limit: int = DEFAULT_PAGE_LIMIT,
+        limit: int = DEFAULT_PAGE_LIMIT, user: Any = None,
     ) -> PullResponse:
+        """`user` is optional so existing callers keep working, but an entity
+        that registers a `scope_filter` and is pulled without one is refused
+        rather than silently served unscoped — the failure mode of a
+        row-scoped entity leaking every row is worse than a 500."""
         positions = _decode_cursor(since)
         entities: List[PullDeltaEntity] = []
         has_more = False
@@ -84,10 +89,24 @@ class SyncService:
             cursor_ts, cursor_id = positions.get(entity_type, (EPOCH, 0))
             model = entry.model
 
+            # Row-level scoping, from the registration rather than from here:
+            # this engine has no idea which column on which model means "whose
+            # row this is". Architecture §5's first row ("...but only their
+            # own") is a per-entity rule, so the entity supplies it.
+            scope: List[Any] = []
+            if entry.scope_filter is not None:
+                if user is None:
+                    raise RuntimeError(
+                        f"'{entity_type}' registers a scope_filter but pull() was "
+                        "called without a user; refusing to serve it unscoped."
+                    )
+                scope = await entry.scope_filter(self.session, user)
+
             stmt = (
                 select(model)
                 .where(
                     model.tenant_id == tenant_id,
+                    *scope,
                     tuple_(model.updated_at, model.id) > tuple_(cursor_ts, cursor_id),
                     model.updated_at <= server_utc_now() - timedelta(seconds=SYNC_SAFETY_LAG_SECONDS),
                 )
@@ -129,7 +148,16 @@ class SyncService:
 
     # ---------------------------------------------------------------- push
 
-    async def push(self, mutations: List[PushMutation], actor_key: str) -> PushResponse:
+    async def push(self, mutations: List[PushMutation], user: Any) -> PushResponse:
+        """Takes the whole principal, not just its email.
+
+        `actor_key` remains the email, so the idempotency key
+        (actor_key, client_mutation_id) means exactly what it did before. But a
+        registration that routes its CREATE through a domain service needs the
+        role and the signed `employee_id` claim as well — "only your own
+        attendance" cannot be checked against an email.
+        """
+        actor_key = user.email
         results: List[PushMutationResult] = []
         for mutation in mutations:
             replay = await self._find_replay(actor_key, mutation.client_mutation_id)
@@ -150,8 +178,28 @@ class SyncService:
                                 f"Registered: {registered_entity_types()}",
                     ),
                 )
+            elif mutation.op not in entry.allowed_ops:
+                # Architecture §8.3 scopes offline capability per operation as
+                # well as per entity. An attendance CORRECTION is an UPDATE,
+                # and it is online-only and role-gated; letting it through here
+                # would bypass `require_hr` by choosing a different verb.
+                result = PushMutationResult(
+                    client_mutation_id=mutation.client_mutation_id,
+                    outcome="rejected",
+                    entity_type=mutation.entity_type,
+                    entity_id=mutation.entity_id,
+                    error=PushErrorDetail(
+                        code="OPERATION_NOT_SYNCABLE",
+                        message=(
+                            f"'{mutation.op}' is not syncable for "
+                            f"'{mutation.entity_type}'. Syncable: "
+                            f"{sorted(entry.allowed_ops)}. This operation stays "
+                            "online-only on purpose."
+                        ),
+                    ),
+                )
             else:
-                result = await self._apply_one_guarded(entry, mutation, actor_key)
+                result = await self._apply_one_guarded(entry, mutation, user)
 
             await self._log_mutation(actor_key, mutation, result)
             results.append(result)
@@ -192,7 +240,7 @@ class SyncService:
         await self.session.flush()
 
     async def _apply_one_guarded(
-        self, entry: SyncableEntity, mutation: PushMutation, actor_key: str
+        self, entry: SyncableEntity, mutation: PushMutation, user: Any
     ) -> PushMutationResult:
         """Runs `_apply_one` inside a SAVEPOINT and lets any DB-poisoning
         exception (a failed INSERT/UPDATE) propagate all the way out of the
@@ -206,7 +254,7 @@ class SyncService:
         """
         try:
             async with self.session.begin_nested():
-                return await self._apply_one(entry, mutation, actor_key)
+                return await self._apply_one(entry, mutation, user)
         except ConflictError as exc:
             # Defense-in-depth: version_id_col's own flush-time check caught a
             # race the pre-check in `_apply_one` didn't (two ops in the same
@@ -220,6 +268,26 @@ class SyncService:
                 entity_id=exc.entity_id,
                 error=PushErrorDetail(**envelope),
             )
+        except HTTPException as exc:
+            # A domain service refusing this mutation — 403 "not your record",
+            # 422 "interval too long", 409 "already checked out". One refused
+            # mutation must not abort the rest of the batch, and it must not
+            # become a 500 either: it is a per-mutation outcome, which is
+            # exactly what `rejected` means. Before Phase 8 no registration
+            # called a domain method, so nothing here could raise this.
+            detail = exc.detail
+            if isinstance(detail, dict):
+                detail = detail.get("message", detail)
+            return PushMutationResult(
+                client_mutation_id=mutation.client_mutation_id,
+                outcome="rejected",
+                entity_type=mutation.entity_type,
+                entity_id=mutation.entity_id,
+                error=PushErrorDetail(
+                    code="FORBIDDEN" if exc.status_code == 403 else "VALIDATION_ERROR",
+                    message=str(detail),
+                ),
+            )
         except (IntegrityError, ValidationError) as exc:
             return PushMutationResult(
                 client_mutation_id=mutation.client_mutation_id,
@@ -230,12 +298,13 @@ class SyncService:
             )
 
     async def _apply_one(
-        self, entry: SyncableEntity, mutation: PushMutation, actor_key: str
+        self, entry: SyncableEntity, mutation: PushMutation, user: Any
     ) -> PushMutationResult:
+        actor_key = user.email
         service = entry.service_factory(self.session)
 
         if mutation.op == "CREATE":
-            return await self._apply_create(entry, service, mutation, actor_key)
+            return await self._apply_create(entry, service, mutation, user)
 
         current = await service.repo.get_by_public_id(mutation.entity_id)
         if current is None:
@@ -289,12 +358,28 @@ class SyncService:
         )
 
     async def _apply_create(
-        self, entry: SyncableEntity, service, mutation: PushMutation, actor_key: str
+        self, entry: SyncableEntity, service, mutation: PushMutation, user: Any
     ) -> PushMutationResult:
+        if entry.create_handler is not None:
+            # The entity's OWN service method, with the authenticated
+            # principal — same method, same authorization, same derivation and
+            # same audit write the REST router reaches (Architecture §9: one
+            # path to the database). The generic path below cannot be used for
+            # an entity with domain rules: it would build the row straight from
+            # the client's payload and skip all of them.
+            created = await entry.create_handler(self.session, user, mutation.payload or {})
+            return PushMutationResult(
+                client_mutation_id=mutation.client_mutation_id,
+                outcome="applied",
+                entity_type=mutation.entity_type,
+                entity_id=created.public_id,
+                version=created.version,
+            )
+
         dto = entry.create_schema(**(mutation.payload or {}))
         entity = entry.model(public_id="temp", **dto.model_dump())
         created = await service.create(
-            entity, actor=actor_key, action=entry.create_action, after_diff=dto.model_dump(mode="json"),
+            entity, actor=user.email, action=entry.create_action, after_diff=dto.model_dump(mode="json"),
         )
         return PushMutationResult(
             client_mutation_id=mutation.client_mutation_id,

@@ -152,12 +152,22 @@ async def test_audit_log_is_append_only_for_the_runtime_role(session):
 
 # ------------------------------------------------------------ offline sync
 
-def test_sync_registry_is_empty_until_phase_8():
-    """Offline sync is opt-in per entity by registry membership. Phase 0-7
-    registers nothing; Phase 8 registers exactly `attendance` and
-    `time_off_request` (Architecture §8.3). A domain entity showing up here
-    early — a payroll entity above all — is a real defect, not a stale test."""
-    assert registered_entity_types() == []
+def test_sync_registry_holds_exactly_the_two_phase_8_entities():
+    """Offline sync is opt-in per entity by registry membership.
+
+    Phase 8 registers exactly `attendance` and `time_off_request`
+    (Architecture §8.3). This asserts the WHOLE set, not membership, because
+    the risk this test exists for is an entity appearing that nobody decided
+    to expose — a payroll entity above all. Adding one has to break a test
+    and be argued for, not slip in.
+    """
+    assert sorted(registered_entity_types()) == ["attendance", "time_off_request"]
+
+    forbidden = {
+        "payrun", "payslip", "payslip_line", "salary_rule", "salary_structure",
+        "contract", "employee", "time_off_allocation", "time_off_type", "user",
+    }
+    assert forbidden.isdisjoint(registered_entity_types())
 
 
 async def test_sync_pull_rejects_unregistered_entity_type(client):

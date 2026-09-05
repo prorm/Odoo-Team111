@@ -13,6 +13,10 @@ import {
 } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { useHrCollection, useHrWrite } from "@/hooks/useAttendanceTimeOff";
+import {
+  useOfflineMutation,
+  usePendingOfflineMutations,
+} from "@/hooks/useOfflineMutation";
 import { HR_ROLES, hasRole } from "@/types/enums";
 import type { Attendance } from "@/types/attendance-time-off";
 import {
@@ -32,6 +36,13 @@ export function AttendancePage() {
   const [offset, setOffset] = useState(0);
   const records = useHrCollection<Attendance>("attendance", employee, offset);
   const write = useHrWrite("attendance");
+  // PS §5.3 / Architecture §8.3: an Employee's OWN check-in is the one
+  // attendance write that may happen with no network, so it goes through the
+  // offline outbox rather than straight to REST. HR entry for someone else,
+  // corrections and deletes stay on the REST path — the backend registers
+  // attendance as CREATE-only and would reject them here anyway.
+  const offline = useOfflineMutation("attendance");
+  const queued = usePendingOfflineMutations("attendance");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Attendance>();
   const [selectedEmployee, setSelectedEmployee] = useState("");
@@ -53,17 +64,22 @@ export function AttendancePage() {
   async function save(event: React.FormEvent) {
     event.preventDefault();
     try {
-      await write.mutateAsync({
-        path: editing?.id ?? "",
-        method: editing ? "PATCH" : "POST",
-        values: {
-          check_in: new Date(checkIn).toISOString(),
-          check_out: checkOut ? new Date(checkOut).toISOString() : null,
-          ...(editing
-            ? { version: editing.version, correction_reason: reason }
-            : { employee_id: hr ? selectedEmployee : ownId }),
-        },
-      });
+      const values = {
+        check_in: new Date(checkIn).toISOString(),
+        check_out: checkOut ? new Date(checkOut).toISOString() : null,
+        ...(editing
+          ? { version: editing.version, correction_reason: reason }
+          : { employee_id: hr ? selectedEmployee : ownId }),
+      };
+      if (!editing && !hr) {
+        await offline.create(values);
+      } else {
+        await write.mutateAsync({
+          path: editing?.id ?? "",
+          method: editing ? "PATCH" : "POST",
+          values,
+        });
+      }
       setOpen(false);
       setMessage(editing ? "Attendance corrected." : "Attendance recorded.");
     } catch {
@@ -96,11 +112,20 @@ export function AttendancePage() {
               disabled={write.isPending}
               onClick={async () => {
                 try {
-                  await write.mutateAsync({
-                    path: "check-in",
-                    values: { employee_id: ownId },
+                  // The device's clock, not the server's: an offline
+                  // check-in happened when the person arrived, not when
+                  // their phone found a signal again. The server still
+                  // authorizes it and still derives worked hours and
+                  // status — only the timestamp is the client's, which is
+                  // unavoidable for an offline check-in and consistent
+                  // with PRD §8 ("manually entered/corrected").
+                  await offline.create({
+                    employee_id: ownId,
+                    check_in: new Date().toISOString(),
                   });
-                  setMessage("Checked in.");
+                  setMessage(
+                    "Checked in. It will sync automatically if you are offline.",
+                  );
                 } catch {}
               }}
             >
@@ -141,6 +166,25 @@ export function AttendancePage() {
       )}
       <ErrorMessage error={records.error} />
       {!open && <ErrorMessage error={write.error} />}
+      {(queued.data?.length ?? 0) > 0 && (
+        <div
+          data-testid="attendance-pending-sync"
+          className="rounded-lg border border-amber-800/50 bg-amber-950/25 p-3 text-sm text-amber-200"
+        >
+          <p className="font-medium">
+            {queued.data!.length} check-in
+            {queued.data!.length === 1 ? "" : "s"} waiting to sync
+          </p>
+          <ul className="mt-1 space-y-0.5 text-xs opacity-90">
+            {queued.data!.map((row) => (
+              <li key={row.client_mutation_id}>
+                {stamp(String(row.payload?.check_in ?? ""))} — saved on this
+                device, not yet on the server
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {records.isLoading ? (
         <p>Loading attendance…</p>
       ) : (

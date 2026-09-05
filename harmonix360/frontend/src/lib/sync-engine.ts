@@ -10,10 +10,12 @@ import {
  * app/services/sync_entities.py registrations. A new entry here is the only
  * change needed to start syncing another registered entity type. */
 // Must match what app/services/sync_entities.py registers on the backend.
-// Empty until Phase 8, which registers 'attendance' and 'time_off_request'
-// (Architecture §8.3). The engine below is entity-agnostic and needs no other
-// change when they are added.
-export const SYNCED_ENTITY_TYPES: string[] = [];
+// Phase 8 registers exactly these two (Architecture §8.3), both CREATE-only:
+// attendance check-in/check-out creation, and time-off request submission.
+// Corrections, approvals and refusals stay online-only and role-gated, and
+// the backend rejects them here with OPERATION_NOT_SYNCABLE rather than
+// trusting this list. Nothing payroll-adjacent is ever added.
+export const SYNCED_ENTITY_TYPES: string[] = ['attendance', 'time_off_request'];
 
 interface PushResultItem {
   client_mutation_id: string;
