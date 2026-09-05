@@ -13,6 +13,7 @@ import { PayrollPage } from './routes/payroll/PayrollPage';
 import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
 import { ReportsPage } from './routes/reports/ReportsPage';
 import { MyProfilePage } from './routes/profile/MyProfilePage';
+import { AssistantPage } from './routes/assistant/AssistantPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -64,6 +65,10 @@ const router = createBrowserRouter([
         path: 'reports',
         element: <ReportsPage />,
       },
+      // PS §5.1's AI layer. Not one of B1's six HR sections — it explains what
+      // those sections already contain rather than owning records of its own,
+      // so it sits after them rather than competing for the same place.
+      { path: 'assistant', element: <AssistantPage /> },
       // Anything else lands on Employees rather than a blank screen.
       { path: '*', element: <Navigate to="/employees" replace /> },
     ],

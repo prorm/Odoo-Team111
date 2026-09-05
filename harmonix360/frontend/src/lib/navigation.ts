@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Bot,
   CalendarDays,
   Clock,
   FileText,
@@ -46,6 +47,18 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'Time Off', href: '/time-off', icon: CalendarDays, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
   { name: 'Payroll', href: '/payroll', icon: Wallet, roles: PAYROLL_ROLES },
   { name: 'Reports', href: '/reports', icon: BarChart3, roles: PAYROLL_ROLES },
+  // PS §5.1. Visible to everyone with a login, because the screen does two
+  // different jobs for two different audiences: payroll roles ask contextual
+  // questions about records, and an Employee uses the propose-and-confirm flow
+  // to request their own leave. The payroll half hides itself for a role that
+  // cannot read payroll — and the server refuses it regardless, which is the
+  // control; this is only what gets rendered.
+  {
+    name: 'Assistant',
+    href: '/assistant',
+    icon: Bot,
+    roles: [...HR_ROLES, ...PAYROLL_ROLES, UserRole.EMPLOYEE],
+  },
 ];
 
 export function visibleNavItems(role: UserRole | undefined): NavItem[] {

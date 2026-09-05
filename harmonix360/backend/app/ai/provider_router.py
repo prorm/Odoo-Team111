@@ -1,7 +1,7 @@
 """
 AI Provider Router — Groq → Cerebras fallback chain.
 
-Architecture ref: Section 5 — provider_router.py
+Architecture ref: §8.1 — provider_router.py
 Interface: `async def generate(prompt, context, task_type) -> AIResponse`
 1. Check Redis cache first.
 2. Try Groq (rate-limited). On 429/timeout, fall to Cerebras.
@@ -11,12 +11,25 @@ Interface: `async def generate(prompt, context, task_type) -> AIResponse`
    in the _PROVIDERS list below. The ProviderConfig dataclass and
    fallback loop already support N providers — just append.
 4. On success, cache the response and return.
+
+THE PROVIDER IS AN INFERENCE ENGINE, NOT A SOURCE OF TRUTH
+----------------------------------------------------------
+Nothing this module returns is authoritative. It turns a prompt into prose; the
+prompt was built from the deterministic ERP by `app/ai/context_builder.py`, and
+every figure in the answer must already appear there. Which provider answered,
+whether the answer came from cache, and whether any provider answered at all are
+therefore presentation concerns — a payslip is the same payslip either way.
+
+That is what makes `AIUnavailableError` a clean state rather than an outage. It
+is raised when every configured provider is missing a key, rate-limited, or
+failing, and callers turn it into an explicit "AI unavailable" result that still
+carries the ERP facts. Fabricating an answer, or silently degrading to a cached
+response for a different question, would be worse than saying nothing.
 """
 import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -117,23 +130,40 @@ _PROVIDERS = [
 # Provider call implementations
 # ---------------------------------------------------------------------------
 
+#: The system framing every HR/payroll call carries, separate from the rendered
+#: prompt so it survives even a caller that builds its own text. `temperature`
+#: is low for the same reason: this layer explains figures it was given, and
+#: creative variance in a sentence about someone's pay is not a feature.
+_SYSTEM_MESSAGE = (
+    "You are the explanation layer of an HR and payroll system. The figures you are "
+    "given were calculated by a deterministic engine and are final. Explain them; never "
+    "recalculate them, and never state an amount that was not given to you."
+)
+
+#: Prompts contain real payroll data — names, wages, net pay. They are never
+#: printed, logged at INFO, or attached to a span. The previous build echoed the
+#: full prompt and the full response to stdout, which put every explained
+#: payslip into `docker compose logs` and, through the collector, into whatever
+#: ingests them. Only sizes and outcomes are recorded here; the content is
+#: returned to the caller and goes nowhere else.
+_MAX_TOKENS = 1024
+_TEMPERATURE = 0.3
+
+
 async def _call_groq(prompt: str, model: str, api_key: str) -> tuple[str, int]:
     """Call Groq API. Returns (response_text, token_count)."""
     from groq import AsyncGroq
 
     client = AsyncGroq(api_key=api_key, timeout=settings.AI_PROVIDER_TIMEOUT)
-    print("====== GROQ PROMPT ======")
-    print(prompt)
-    print("=========================")
     response = await client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": _SYSTEM_MESSAGE},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
     )
-    print("====== GROQ RESPONSE ======")
-    print(response.model_dump_json(indent=2))
-    print("===========================")
     text = response.choices[0].message.content or ""
     tokens = response.usage.total_tokens if response.usage else 0
     return text, tokens
@@ -144,18 +174,15 @@ async def _call_cerebras(prompt: str, model: str, api_key: str) -> tuple[str, in
     from cerebras.cloud.sdk import AsyncCerebras
 
     client = AsyncCerebras(api_key=api_key, timeout=settings.AI_PROVIDER_TIMEOUT)
-    print("====== CEREBRAS PROMPT ======")
-    print(prompt)
-    print("=============================")
     response = await client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": _SYSTEM_MESSAGE},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
     )
-    print("====== CEREBRAS RESPONSE ======")
-    print(response.model_dump_json(indent=2))
-    print("===============================")
     text = response.choices[0].message.content or ""
     tokens = response.usage.total_tokens if response.usage else 0
     return text, tokens

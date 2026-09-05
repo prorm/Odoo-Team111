@@ -2130,3 +2130,235 @@ and an MCP session is bound to an authenticated user's role, wrapping the same
 Before either: merge `phase-7-closeout` and then `phase-8-offline` into `dev`.
 Both are fast-forwards, and until that happens `origin/dev` does not contain
 Phase 5, Phase 7 or Phase 8.
+
+---
+
+## 2026-09-05 — Phase 9: AI context layer and MCP tools (PS §5.1/§5.2)
+
+### Gate check, and where this branch is based
+
+Fetched origin and read `origin/dev:progress.md` before touching anything.
+**`origin/dev` is still `cd823a17799c7d651066a51053e8db3e296ff3a2`** and does
+not contain Phase 5, 7 or 8 — the merge the Phase 8 handoff recommended has not
+happened. Its progress.md and its code agree with each other; **no discrepancy
+was found** between them.
+
+The protocol says to branch from the `origin/dev` tip. **This branch is cut from
+`origin/phase-8-offline` (`f4c18e7`) instead**, and that is a deliberate,
+reported deviation:
+
+- Phase 9's own brief requires Phase 7's gate to be confirmed before starting,
+  and that gate's artifacts (`docs/rbac-audit.md`, `scripts/demo_scenarios.py`,
+  the seeded paid payrun with a real PDF) exist only on `phase-7-closeout`.
+- Phase 10's brief requires an **offline-sync OTel trace**, and offline sync
+  exists only on `phase-8-offline`. On `cd823a1` that requirement is not merely
+  harder, it is unsatisfiable.
+- `phase-8-offline` contains `cd823a1` as an ancestor and contains all of
+  `phase-7-closeout`, so this is still "on top of the current integration
+  state" — it is the integration branch that is behind, not this one.
+
+**Phase 7's gate was verified against code, not just read.** Every artifact its
+close-out claims is present: the RBAC audit and its reproducible script, the
+demo-scenario script, `ROADMAP.md`, `_seed_paid_payrun`/`_verify_pdf`, the
+`broker.py` `socket_timeout=None` fix, migrations through `019_payslip_delivery`,
+and `sync_entities.py` registering exactly two CREATE-only entities. The
+documented suite total was reproduced exactly: **362 passed** on a freshly
+created, migrated and seeded database, before a line of Phase 9 was written.
+
+### The shape of the thing, and what it is not
+
+This is not "send the payslip to an LLM and ask it to summarize it". The
+deliverable is a context layer that ORCHESTRATES existing read services so the
+model can reason across connected records, with the deterministic engine
+remaining the sole authority for every figure.
+
+```
+existing services  ->  context_builder  ->  prompts  ->  provider_router
+   (authoritative)      (task-scoped)      (framed)      (narration only)
+```
+
+**Not one line of payroll mathematics was written.** `app/ai/` and `app/mcp/`
+contain no rule evaluation, no Payslip construction and no call into the compute
+engine — asserted by a test that scans both trees for those tokens.
+
+### 1. Read services the context layer orchestrates (new, read-only)
+
+- **`app/services/contract_history.py`** — contract timeline with the wage
+  change between each consecutive pair; period-to-contract resolution that
+  DELEGATES to `payroll_context.resolve_period_contract` rather than
+  reimplementing it (a second "which contract applies" that agreed 99% of the
+  time would show a Time Machine contract the employee was not paid under);
+  expiring contracts; and an overlap check that should always return zero
+  because the EXCLUDE constraint makes overlaps unwritable.
+- **`app/services/pay_comparison.py`** — period-over-period payslip diff.
+  Inputs come from `Payslip.context_snapshot` (frozen at compute, migration
+  018), never from today's contract: explaining a July payslip with August's
+  wage is the exact bug 018 exists to prevent. A missing value is reported as
+  unknown rather than defaulted to zero — "we do not know last month's LOP" and
+  "last month's LOP was zero" are different facts and only one supports the
+  sentence "the LOP is what changed".
+- **`app/services/payslip_explain.py`** — the calculation tree: frozen inputs,
+  lines in the sequence they ran, category subtotals, and the persisted totals.
+  The line's own copied `code`/`name`/`category` are authoritative; anything
+  read from the live `SalaryRule` is nested under `rule_definition_now` and
+  labelled as current, so an explanation cannot describe a formula that never
+  produced the number beside it.
+
+### 2. `app/ai/context_builder.py` — the AI context layer
+
+Five task-scoped builders: payslip explanation, department variance, payroll
+blockers, anomalies, and general employee context. Each returns an `AIContext`
+carrying `facts`, `unavailable` and `sources`.
+
+Four properties, each enforced rather than intended:
+
+1. **Task-specific.** A payslip question loads that employee's two payslips,
+   contracts, attendance and leave — not the department's payroll.
+2. **Traceable.** `sources` names the service behind each section.
+3. **Explicit about absence.** `unavailable` carries a plain-English reason, and
+   the prompt tells the model those are the things it may not guess at. Absence
+   reaching the model as a fact rather than a missing key is what lets it say
+   "the data does not show why".
+4. **Money as strings.** No `float()` anywhere. A test walks the entire rendered
+   payload and fails on any float found.
+
+`deterministic_signals()` prefers Phase 10's anomaly engine when present and
+falls back to the dashboard's alert queries when it is not, **reporting which
+source it used into the prompt** — so an answer built on the fallback is
+traceable as such rather than silently degraded.
+
+### 3. MCP: 19 tools, every one calling an existing service
+
+`app/mcp/tools.py` holds the bodies as plain async functions taking a session;
+`app/mcp/server.py` registers thin schema shims. That split is why "MCP and REST
+share one path to the database" is a test rather than a comment — the bodies are
+callable without starting the MCP process.
+
+All 13 read tools and all 5 action tools from Architecture §8.2, plus the
+retained `query_audit_trail`. **`compute` is deliberately absent**: it is the
+only write path to `Payslip`/`PayslipLine`, and a test asserts the action set
+contains nothing matching "compute" or "payslip".
+
+**RBAC is not reimplemented.** `app/mcp/identity.py` resolves `actor_email` to a
+real `User` row and calls `app.api.v1.deps.require_role` — the same function
+object the routers use. There is deliberately **no demo-admin fallback**: an
+unauthenticated HTTP request is treated as the demo admin outside production,
+and doing that for MCP would hand admin rights to any agent that named no actor.
+
+### 4. Propose -> human confirm -> execute
+
+`app/ai/proposals.py`. The model's output can only ever become a PROPOSAL;
+`execute()` runs only when a human confirms that specific proposal by id, and
+runs it **unmodified** — an "improved" version of a confirmed action is an
+unconfirmed action. Redis holds the pending proposal for 15 minutes; the durable
+record is the audit log (`AI_PROPOSED_ACTION` -> `AI_CONFIRMED_ACTION` ->
+`AI_ACTION_EXECUTED`), so there is no parallel audit system. A validation
+failure inside the service is left to propagate unchanged and audited as
+`AI_ACTION_REJECTED_BY_VALIDATION`. The proposable action set is closed to
+exactly `create_time_off_request`.
+
+### 5. Provider routing, retargeted
+
+Groq -> Cerebras, unchanged mechanically. Three changes:
+
+- **The prompt and response dumps to stdout were removed.** The previous build
+  printed the full prompt and the full response, which put every explained
+  payslip — names, wages, net pay — into `docker compose logs` and anything
+  downstream of them. Only sizes and outcomes are recorded now.
+- A system message and a low temperature, restating that the figures are final.
+- The docstring now states the invariant: the provider is an inference engine,
+  and `AIUnavailableError` is a clean state rather than an outage.
+
+### 6. Verification — what was actually observed
+
+**Full regression: 390 passed**, zero failures (362 inherited + 28 new in
+`tests/test_ai_mcp.py`). Frontend `npm run build` passes `tsc -b` and Vite.
+`ruff check app/ --select F,E9,B` reports only the 7 pre-existing findings in
+files this branch did not touch.
+
+**MCP over the real Streamable HTTP transport** (server started as its own
+process, exercised with a real `fastmcp` client):
+
+```
+tools over the wire: 19
+wrong api key          -> {"status":"error","error":"Invalid or missing MCP agent API key"}
+HR Manager actor       -> 403: Role 'hr_manager' is not authorized ... requires
+                          ['admin','hr_payroll_manager','hr_payroll_user']
+payroll manager actor  -> total_net_salary_paid 274800.00 over 5 payslips
+```
+
+The middle line is the point: a VALID agent key does not widen what the actor
+may do. PRD §7's advanced metric — the same mutation tool refused for an
+unauthorized role and accepted for an authorized one — was verified on
+`approve_time_off_request`: EMPLOYEE actor got `403: HR Manager or above
+required`, HR Manager actor approved it, and the audit row records
+`APPROVE_TIME_OFF_REQUEST` by the impersonated user.
+
+**`scripts/ai_demo.py` — all three demos pass end to end** over real HTTP
+against a running stack (API + Taskiq worker + Postgres + Redis), with
+`ENVIRONMENT=production` so the demo-admin fallback was off and every call
+carried a real login.
+
+DEMO 1 asked "why did Lakshmi's salary change this month?" about a freshly
+computed August payrun, and the context reached past the payslip on its own:
+
+```
+net 41800.00 (July) -> 37514.29 (August), delta -4285.71
+WORKED_DAYS       23.00 -> 18.00
+UNPAID_LEAVE_DAYS  0.00 ->  3.00
+LOP_AMOUNT         0.00 -> 4285.71
+CONTRACT_WAGE  30000.00 -> 30000.00   (unchanged — NOT a pay cut)
+GROSS_AMOUNT   42000.00 -> 42000.00   (unchanged)
+```
+
+Eight fact sources contributed, named in the response. That gross and wage are
+flat while net moved is what makes the answer specific rather than plausible.
+
+DEMO 3 verified the whole mutation chain: proposing wrote **nothing** to the
+domain (request count unchanged), the human confirmed, exactly one record was
+created with status `to_approve`, a replayed confirmation returned 404, and the
+audit trail carried `AI_PROPOSED_ACTION by ai-agent`, `AI_CONFIRMED_ACTION by
+employee@peoplepay360.com` and `AI_ACTION_EXECUTED`.
+
+### 7. The limitation that matters, stated plainly
+
+**No `GROQ_API_KEY` or `CEREBRAS_API_KEY` exists in this environment**, so the
+narration step could not be exercised against a real provider. Both demos
+reported `ai_unavailable` at that step — which is the designed behaviour and was
+itself verified — and printed the full authoritative fact set that would have
+been narrated.
+
+What this means precisely:
+
+- **Verified end to end:** context assembly, prompt rendering, RBAC at both the
+  route and the worker, the queue/poll cycle, the propose/confirm/execute chain,
+  the audit trail, and the clean-unavailable state.
+- **Verified with a stubbed provider** (`tests/test_ai_mcp.py`): the prompt the
+  model actually receives contains the ERP's exact figures, the employee's name,
+  the `UNAVAILABLE INFORMATION` block and the instruction never to recalculate;
+  the response is threaded back with its provider recorded.
+- **Not verified:** the quality of a real model's prose. Set either key and the
+  same code path narrates.
+
+### Files created
+
+- `harmonix360/backend/app/ai/context_builder.py`, `context_assembly.py`,
+  `proposals.py`, `prompts/__init__.py`
+- `harmonix360/backend/app/mcp/tools.py`, `identity.py`
+- `harmonix360/backend/app/services/contract_history.py`, `pay_comparison.py`,
+  `payslip_explain.py`
+- `harmonix360/backend/tests/test_ai_mcp.py`, `scripts/ai_demo.py`
+- `harmonix360/frontend/src/types/ai.ts`, `hooks/useAi.ts`,
+  `routes/assistant/AssistantPage.tsx`
+
+### Files modified
+
+- `app/ai/provider_router.py` (retargeted; stdout prompt dumps removed)
+- `app/api/v1/routers/ai.py` (rewritten: ask / proposals / confirm / reject)
+- `app/jobs/tasks/ai_jobs.py` (added `run_hr_insight`, `run_ai_action_proposal`)
+- `app/mcp/server.py` (the §8.2 tool set registered)
+- `frontend/src/router.tsx`, `frontend/src/lib/navigation.ts`
+
+No payroll service, model, migration, schema or router was modified. The
+`git diff --stat` against `f4c18e7` touches nothing under `app/services/payroll*`,
+`app/models/` or `alembic/`.
