@@ -114,3 +114,184 @@ class AuditActorType(str, enum.Enum):
     HUMAN = "HUMAN"
     SYSTEM = "SYSTEM"
     AI = "AI"
+
+
+# ---------------------------------------------------------------------------
+# HR domain enums (Architecture §4)
+#
+# CASING: every enum below uses lowercase values, matching UserRole above. This
+# is not cosmetic — Architecture §6 pins the Contract non-overlap constraint's
+# predicate to `WHERE (status = 'active')`, a raw SQL string literal compared
+# against the stored value. Storing 'ACTIVE' would make that predicate match
+# nothing and silently disable the single most important integrity guarantee in
+# the product, with no error anywhere. Lowercase everywhere removes the chance
+# to get that wrong once.
+#
+# UserStatus and DepartmentStatus above keep their pre-existing uppercase
+# values. Normalising them would be a cosmetic-only data migration on two
+# columns no constraint predicate reads, which is not worth the churn; neither
+# is referenced by a SQL literal anywhere.
+# ---------------------------------------------------------------------------
+
+
+class EmployeeStatus(str, enum.Enum):
+    """Where an employee sits in their employment lifecycle.
+
+    Distinct from Contract status: an employee is `active` while working,
+    regardless of how many contracts they have had. Payroll resolves the
+    contract; this drives who appears in an HR list by default.
+    """
+
+    ACTIVE = "active"
+    ON_LEAVE = "on_leave"
+    NOTICE_PERIOD = "notice_period"
+    EXITED = "exited"
+
+
+class EmployeeType(str, enum.Enum):
+    """Employment category. Required by PRD A7, which makes the reporting
+    dashboard filterable by Period / Department / **Employee Type**."""
+
+    PERMANENT = "permanent"
+    CONTRACT = "contract"
+    INTERN = "intern"
+    PART_TIME = "part_time"
+
+
+class ContractStatus(str, enum.Enum):
+    """Contract lifecycle.
+
+    Only `active` rows participate in the non-overlap EXCLUDE constraint
+    (Architecture §6). That is deliberate: an employee may hold any number of
+    draft, expired or cancelled contracts covering the same dates — history and
+    proposals are not conflicts — but never two active ones, because payroll
+    must resolve exactly one contract per period (PRD A2).
+
+    Consequence for any code that mutates `status`: moving a row INTO `active`
+    moves it into the constrained set and can raise SQLSTATE 23P01. Per
+    BaseService's documented contract, every mutation path that can do that
+    owes the 409 translation, not just the obvious create path.
+    """
+
+    DRAFT = "draft"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class WorkingScheduleType(str, enum.Enum):
+    FULL_TIME = "full_time"
+    PART_TIME = "part_time"
+    FLEXIBLE = "flexible"
+
+
+class Weekday(str, enum.Enum):
+    """Day of the week for a ScheduleLine.
+
+    Stored as a name rather than an integer so a schedule row is readable in a
+    raw query and immune to the 0-vs-1-indexed, Sunday-vs-Monday-first
+    ambiguity that silently shifts a whole week's hours.
+    """
+
+    MONDAY = "monday"
+    TUESDAY = "tuesday"
+    WEDNESDAY = "wednesday"
+    THURSDAY = "thursday"
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
+
+
+#: Canonical week order, for sorting schedule lines for display and for the
+#: weekly-hours computation. Relying on enum declaration order would work today
+#: but breaks the moment someone reorders the class for readability.
+WEEKDAY_ORDER: dict["Weekday", int] = {day: index for index, day in enumerate(Weekday)}
+
+
+class AttendanceStatus(str, enum.Enum):
+    """Outcome of one attendance record (PS B3).
+
+    `corrected` is a terminal marker rather than a state an employee can set:
+    it records that an authorized role edited the record after the fact, which
+    is why Attendance carries `corrected_by` and why corrections stay
+    online-only and role-gated even after offline sync lands (Architecture
+    §8.3).
+    """
+
+    PRESENT = "present"
+    LATE = "late"
+    ABSENT = "absent"
+    HALF_DAY = "half_day"
+    CORRECTED = "corrected"
+
+
+class TimeOffUnit(str, enum.Enum):
+    DAYS = "days"
+    HOURS = "hours"
+
+
+class TimeOffAllocationStatus(str, enum.Enum):
+    DRAFT = "draft"
+    CONFIRMED = "confirmed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class TimeOffRequestStatus(str, enum.Enum):
+    """PS B4's approve/refuse workflow — a status field, not a state machine.
+
+    Architecture §2 is explicit that the generic workflow engine was removed
+    because this is a two-state transition; keep it that way.
+    """
+
+    DRAFT = "draft"
+    TO_APPROVE = "to_approve"
+    APPROVED = "approved"
+    REFUSED = "refused"
+    CANCELLED = "cancelled"
+
+
+class SalaryRuleCategory(str, enum.Enum):
+    """The buckets a payslip is presented in (PS B7)."""
+
+    BASIC = "basic"
+    ALLOWANCE = "allowance"
+    GROSS = "gross"
+    DEDUCTION = "deduction"
+    NET = "net"
+
+
+class SalaryRuleComputation(str, enum.Enum):
+    """How a rule produces its amount (PS A6).
+
+    FORMULA evaluates through `simpleeval` over named inputs — a restricted
+    grammar, never `eval()` (Architecture §1). AI never participates in any of
+    these; the rule engine is the sole authority for every figure on a payslip
+    (Architecture §7/§10).
+    """
+
+    FIXED = "fixed"
+    PERCENTAGE = "percentage"
+    FORMULA = "formula"
+
+
+class PayrunStatus(str, enum.Enum):
+    """PS B6: Compute / Validate / Mark Paid / Send Payslips.
+
+    `validated` and beyond are history — a finalized run is preserved, never
+    recomputed in place.
+    """
+
+    DRAFT = "draft"
+    COMPUTED = "computed"
+    VALIDATED = "validated"
+    PAID = "paid"
+    CANCELLED = "cancelled"
+
+
+class PayslipStatus(str, enum.Enum):
+    DRAFT = "draft"
+    COMPUTED = "computed"
+    VALIDATED = "validated"
+    PAID = "paid"
+    CANCELLED = "cancelled"

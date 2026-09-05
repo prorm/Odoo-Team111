@@ -19,7 +19,18 @@ app = FastAPI(
 if FastAPIInstrumentor:
     FastAPIInstrumentor.instrument_app(app)
 
-from app.api.v1.routers import auth, ai, sync
+from app.api.v1.routers import (
+    ai,
+    attendance,
+    auth,
+    contracts,
+    employees,
+    payroll,
+    salary,
+    schedules,
+    sync,
+    time_off,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +45,19 @@ app.add_middleware(IdempotencyMiddleware)
 app.add_exception_handler(ConflictError, conflict_error_handler)
 
 app.include_router(auth.router, prefix=settings.API_V1_STR)
+
+# Core HR domain (PS A1-A7 / B1-B9).
+app.include_router(employees.router, prefix=settings.API_V1_STR)
+app.include_router(contracts.router, prefix=settings.API_V1_STR)
+app.include_router(schedules.router, prefix=settings.API_V1_STR)
+app.include_router(attendance.router, prefix=settings.API_V1_STR)
+app.include_router(time_off.router, prefix=settings.API_V1_STR)
+app.include_router(salary.router, prefix=settings.API_V1_STR)
+app.include_router(payroll.router, prefix=settings.API_V1_STR)
+
+# Platform/Intelligence layer — mounted but dormant until Phases 8-10.
+# /sync registers zero entity types (app/services/sync_entities.py) and /ai has
+# no HR prompt families wired to it yet.
 app.include_router(sync.router, prefix=settings.API_V1_STR)
 app.include_router(ai.router, prefix=settings.API_V1_STR)
 

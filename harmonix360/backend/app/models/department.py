@@ -8,7 +8,7 @@ relationship that pointed at the deleted AssetFlow tables; no AssetFlow-specific
 COLUMN ever existed on this table, so the schema itself is untouched.
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import BigInteger, String, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
@@ -16,6 +16,9 @@ from app.models.mixins import utc_now
 from app.models.types import StrEnum
 from app.models.enums import DepartmentStatus
 from app.models.user import User
+
+if TYPE_CHECKING:
+    from app.models.employee import Employee
 
 
 class Department(Base):
@@ -33,7 +36,9 @@ class Department(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     users: Mapped[List["User"]] = relationship("User", back_populates="department", foreign_keys=[User.department_id])
-    # `employees` is added in Phase 0 step 5, alongside the Employee model.
+    employees: Mapped[List["Employee"]] = relationship(
+        "Employee", back_populates="department", foreign_keys="Employee.department_id"
+    )
 
     __table_args__ = (
         UniqueConstraint("code", "tenant_id", name="uq_department_code_tenant"),
