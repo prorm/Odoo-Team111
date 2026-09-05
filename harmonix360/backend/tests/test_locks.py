@@ -77,8 +77,24 @@ async def test_same_entity_serializes():
 
     # The contender asked for the lock while the holder still had it...
     assert _at(log, "contender_requesting") < _at(log, "holder_about_to_commit"), log
-    # ...and did not get it until after the holder's COMMIT released it.
-    assert _at(log, "contender_acquired") >= _at(log, "holder_committed"), log
+    # ...and did not get it until the holder was done with it.
+    #
+    # Compared against `holder_about_to_commit`, NOT `holder_committed`. Both
+    # coroutines share one event loop, and `holder_committed` is appended only
+    # when the loop resumes the holder AFTER its COMMIT round-trip returns. The
+    # database releases the advisory lock at COMMIT, so the contender can
+    # legitimately unblock and append its own entry in between — this assertion
+    # used to compare against `holder_committed` and failed roughly one run in
+    # three on a 0.6ms inversion that proved nothing about the lock.
+    #
+    # `holder_about_to_commit` is logged INSIDE the transaction, while the lock
+    # is still held, so acquiring at or after it is the real property.
+    assert _at(log, "contender_acquired") >= _at(log, "holder_about_to_commit"), log
+    # And it genuinely blocked rather than merely being scheduled late: the
+    # wait covers the whole hold. This is the assertion the ordering one was
+    # trying to make, expressed so that scheduling order cannot fake it.
+    waited = _at(log, "contender_acquired") - _at(log, "contender_requesting")
+    assert waited >= HOLD_SECONDS * 0.9, (waited, log)
 
 
 async def test_different_entities_do_not_serialize():

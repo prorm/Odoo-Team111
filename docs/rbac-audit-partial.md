@@ -1,4 +1,14 @@
-# RBAC Audit — PARTIAL
+# RBAC Audit — PARTIAL (superseded)
+
+> **SUPERSEDED — do not read this as the current audit.**
+>
+> Phase 7 produced the complete audit at [rbac-audit.md](rbac-audit.md): every
+> endpoint, every verb, all five roles, 395 observed status codes. The
+> PENDING PHASE 5 rows below are all verified there.
+>
+> This file is kept because it records what was actually known at the time,
+> and the reasoning about which matrix row governs the dashboard carried
+> forward unchanged.
 
 **Status:** partial, on purpose. This document covers the **Payroll Dashboard
 (Phase 6)** routes and the payroll reads it aggregates over, verified by real

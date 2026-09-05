@@ -1,6 +1,6 @@
 # PeoplePay360 progress and handoff
 
-Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-7-closeout.
+Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-7-closeout (Phase 7 gate CLOSED).
 Product name is PeoplePay360; source folders retain the Harmonix360 base name.
 
 ## Start here
@@ -1470,3 +1470,376 @@ percentage as before. No dashboard, payroll, PDF or email file was touched.
    it.
 4. Whether employees ever get self-service payslip access. Currently and
    deliberately: no.
+
+---
+
+## 2026-09-05 — Phase 7 closeout: the core is demoable
+
+### Protocol and starting point
+
+Fetched origin and read `origin/dev:progress.md` as it stands on the remote,
+then diffed its claims against the code on `origin/dev` before touching
+anything. Integration tip: **`cd823a17799c7d651066a51053e8db3e296ff3a2`**
+("test(integration): verify gap-fix legacy reads and document demo limits").
+
+**No discrepancy was found.** progress.md's claims were checked file by file
+against `origin/dev`: Phases 1-4 and 6 present, gap-fix's `LOP_AMOUNT` and
+`018_payroll_snapshots` present, `payslip_snapshot.py` present, Phase 5 absent
+exactly as documented, `app/services/sync_entities.py` present and registering
+zero entities. The documented suite total (339) was reproduced.
+
+Two things worth recording that the handoff did not mention:
+
+- Local `dev` was accidentally sitting on `origin/phase-5-payslip-pdf-email`'s
+  tip (`c896c34`), one commit ahead of `origin/dev`. Work was branched from the
+  **remote** `origin/dev` tip regardless, per protocol.
+- The working tree carried an **uncommitted fix to `app/jobs/broker.py`** that
+  is on no branch. It sets `socket_timeout=None` on the Taskiq broker: redis-py
+  8.x defaults every connection to a 5s read timeout, so the worker's idle
+  `BRPOP` timed out every 5 seconds, `taskiq_redis`'s `listen()` catches only
+  `ConnectionError` and not `TimeoutError`, and the worker process crashed and
+  respawned in an infinite loop with no task in flight. **Phase 5's bulk email
+  cannot work without this fix**, so it is carried forward and committed here
+  rather than discarded.
+
+### Branch and integration
+
+Branch `phase-7-closeout`, created from `cd823a1`. Both branches to merge had
+their merge-base **at that exact commit**, so the requested rebase was a
+verified no-op rather than a skipped step:
+
+```
+merge-base origin/dev origin/phase-5-payslip-pdf-email = cd823a1
+merge-base origin/dev origin/phase-7-prep              = cd823a1
+origin/dev tip                                         = cd823a1
+```
+
+`--no-ff` merges of both. The only conflict was `progress.md`, where each branch
+had appended its own dated section; both were kept, in order, separated by a
+rule. Nothing was dropped. The union was then verified mechanically rather than
+by eye: `git diff origin/phase-5... HEAD` shows *only* phase-7-prep's files and
+`git diff origin/phase-7-prep HEAD` shows *only* phase-5's, which is exactly
+what a clean union looks like.
+
+### 1. The seed now contains a finalized payrun with a real PDF
+
+`app/seed.py`. The previous version's own TODO said a paid payrun "cannot be"
+seeded because no PDF renderer existed. Phase 5 landed, so it can be.
+
+- `_seed_paid_payrun` drives **July 2026** through the real `PayrunService`:
+  `create_payrun` then `compute` then `validate_payrun` then `mark_paid`, the
+  same four calls PS B6's buttons make. Nothing is written through repositories
+  or SQL: a payslip written by anything but the compute engine has no
+  `reference_snapshot`, and migration 018 makes exactly those rows answer 409 on
+  every read, so a hand-built "paid" payslip would seed a demo whose payslips
+  cannot be opened, printed or emailed.
+- `_verify_pdf` then **renders** one of the resulting payslips and checks the
+  bytes start with `%PDF-`. "A paid payrun with a generated PDF" is generated,
+  not asserted. It never raises: the seed is the backend container's start
+  command (`alembic upgrade head && python -m app.seed && uvicorn ...`), so an
+  exception there would take the whole API down over a document-rendering
+  dependency. A failure logs an ERROR naming the cause, and the data stays correct.
+- **July, not August, and that is the point.** August 2026 is the live demo
+  period. A pre-computed August would hand every employee a blocking
+  `duplicate_payslip` at Compute - the firewall working correctly and the demo
+  failing anyway.
+- `_seed_roster` adds four more employees across the four seeded departments
+  (Engineering, Sales, HR, Finance), each with a schedule, a bank account and an
+  open-ended active contract. PRD §11 asks for "representative data", and B9's
+  Salary Cost by Department and department breakdown are named acceptance
+  criteria that render as a single bar - and read as broken - against a
+  one-employee database. One roster member is `CONTRACT` type so the
+  employee-type filter demonstrates something.
+- `_seed_attendance_window` was extracted from the old inline loop and now seeds
+  July and August for everyone, skipping the approved unpaid leave.
+
+**The employee login is now linked to its Employee row** (`EMPLOYEE_LOGIN_EMAIL`).
+This closes a real hole: no endpoint sets `Employee.user_id` - `EmployeeCreate`
+excludes it deliberately, so an HR Manager cannot attach an employee to an
+account outranking their own, and the Admin surface that would replace it does
+not exist (see known gaps). Without the link the token carries no `employee_id`
+claim, every "own records" screen has nothing to scope by, and demonstrating the
+Employee role requires an `UPDATE` typed into psql - which PRD §7 explicitly
+rules out. The link is guarded: if another Employee already holds that login it
+logs a warning and leaves it alone, because `user_id` is UNIQUE and stealing it
+would raise. The demo user's display name was changed to match the Employee it
+points at.
+
+Idempotency is preserved throughout - verified by running the seed twice against
+a fresh database and diffing every persisted payslip column.
+
+### 2. Full RBAC audit - 395 observed status codes, all matching §5
+
+`docs/rbac-audit.md`, produced by `harmonix360/backend/scripts/rbac_audit.py`
+(committed, so the audit is reproducible rather than a screenshot).
+
+**79 endpoints x 5 roles = 395 probes. Every cell matches Architecture §5**,
+including Reports/Dashboard and all four B8 Print/Send routes, which
+`docs/rbac-audit-partial.md` had listed as PENDING PHASE 5. That file is
+superseded and kept for its history.
+
+Every cell is an observed status code from a real request through the real ASGI
+stack, with tokens from a real `POST /auth/login` round-trip per role. Nothing
+is inferred from reading `require_role` in the source.
+
+**The audit's first version was wrong, and the way it was wrong is worth
+recording.** It sent empty `{}` bodies to service-gated routes. Those return 422
+at request validation *before* the handler runs, so `require_hr` was never
+reached and seven routes reported false mismatches - the probe was measuring
+Pydantic, not authorisation. The fix was to send schema-valid bodies pointing at
+well-formed but nonexistent public ids: `require_hr(user)` is the first
+statement of every such method, before the row lookup and before the version
+check, so a denied role gets 403 and a permitted one gets 404, and no UPDATE is
+reachable either way.
+
+Two more findings, recorded rather than smoothed over:
+
+- **`404`, not `403`, on another employee's record.** `assert_can_read` returns
+  "not found" on purpose: a 403 confirms the row exists and would let any login
+  enumerate the staff directory by probing ids. The audit classifies this as
+  `hidden` - a denial with no existence oracle - rather than counting it as a
+  pass or a failure.
+- **The four `/me` routes answer 404 for every HR role**, because those logins
+  have no Employee row. That is the normal shape of a payroll or admin account,
+  not a grant and not a denial; the audit classifies it as `no-link`.
+
+The audit is non-mutating except for §5's two Employee *grants* (create own
+attendance, create own leave request), which cannot be observed without being
+exercised. Both rows are created as the employee and deleted as admin, and a
+failed cleanup is reported as an audit failure. A residue check after a full run
+against a freshly seeded database found exactly the seeded dataset and nothing
+else.
+
+### 3. Both PRD acceptance scenarios, run live end to end
+
+`harmonix360/backend/scripts/demo_scenarios.py`, over real HTTP against a
+running stack - real logins per role, real `Idempotency-Key` headers, the real
+Taskiq worker and the real SMTP catcher. **Both pass, with no manual DB edits,
+in 7.8 seconds.**
+
+Scenario 1 (employee, schedule, contract, payrun, payslip, PDF, email) asserts,
+among other things: server-computed weekly hours of 35.00; the new employee
+appearing in B5 step 2's eligibility list; the hand-checkable breakdown BASIC
+60000.00, HRA 24000.00, GROSS 84000.00, PT 200.00, LOP 0.00, NET 83800.00; the
+payslip carrying the snapshot Compute wrote; a real 12.6 KB PDF from
+`GET /payslips/{id}/pdf`; the delivery row reaching `sent`; and the SMTP
+catcher's mailbox count increasing.
+
+Scenario 2 (allocation, request, approval, balance) asserts that a **pending
+request does not reserve balance**, that HR sees it in the approval queue, that
+approval moves the allocation to taken 3.00 / remaining 7.00, and that the
+approved request names the allocation it debited.
+
+Three assertion bugs in the script were fixed rather than worked around, and
+each taught something about the API worth writing down:
+`POST /payruns/{id}/validate` answers with the **validation report**, whose
+`status` field is the status the run had when the checks ran (so it reads
+`computed` on success - the transition is confirmed by re-reading the run);
+`duration` is an unquantized `Decimal` on the wire (`"3"`) while allocation
+columns are stored quantized (`"3.00"`), so comparisons are made as `Decimal`,
+never as text; and the pending status is `to_approve`, not `pending`.
+
+The teardown reports three 409s as **refused by design** rather than as
+failures: approved leave is immutable, a used allocation cannot be deleted, and
+a referenced leave type cannot be removed. A finalized payrun likewise cannot be
+deleted, so a rehearsal cannot fully undo itself - the script says so instead of
+pretending otherwise, and rehearsals should target a scratch database.
+
+### 4. Both failure modes verified in the browser
+
+Driven through the **built frontend** with Playwright, not by reading code:
+
+- **Duplicate payslip.** Computing a second payrun over the already-paid July
+  period surfaces blocking `duplicate_payslip` findings in the validation panel,
+  and **Validate is observed disabled** while they stand.
+- **Overlapping active contract.** Creating a second active contract for the
+  Loss-of-Pay employee is refused by the Postgres EXCLUDE constraint and
+  rendered as an inline form error naming the conflicting contract and its
+  period: "Lakshmi Prasad already has an active contract (ctr_...) covering
+  2026-01-01 to open-ended, which overlaps the requested period...". Not a
+  crash, not a blank screen.
+
+### 5. UI pass - every B1-B9 feature has a real screen
+
+**29/29 browser checks passed, zero HTTP 5xx.** No `SectionStub` remains routed
+(`SectionStub.tsx` is kept for a future section that lands ahead of its
+implementation). B7's rule-by-rule breakdown renders inside the payslip dialog's
+sandboxed preview iframe - the same server template the PDF and the email
+attachment use - showing sequence, rule, code, category and amount for all six
+rules, plus the contract-wage snapshot and the pay period.
+
+Three things were fixed during the pass:
+
+- The frontend container image predated the Phase 5 merge, so **Print Payslip
+  did not exist in the running app**. Rebuilt; "B8 Print produces a downloaded
+  PDF file" is now an observed download event.
+- The browser tab still read `Harmonix360 - Enterprise Platform`. Retitled to
+  `PeoplePay360 - HR & Payroll`; the product name was visible on stage.
+- **`MyProfilePage` is new.** PRD §4's Employee user stories open with "view own
+  profile", and nothing in the frontend called `/employees/me` - the endpoint
+  existed with no screen behind it. The page is read-only (§5 gives Employee R
+  and nothing more), reads `/employees/me` and `/time-off-allocations/me` so
+  there is no id in the URL to point at someone else, and renders an explanation
+  rather than an error for a login with no Employee row. Its nav entry is
+  Employee-only: HR roles reach anyone through Employees, and their logins
+  usually have no Employee row, so the entry would lead them nowhere.
+
+### 6. ROADMAP.md finished
+
+Replaced the skeleton with real content in every section: what each phase
+delivered and the decision that mattered in it, the two forward phases described
+concretely enough to start from, the six cross-cutting invariants, and a
+**known-gaps table** of nine deliberate omissions with the reason each is open.
+The gaps include the one Architecture §5 row with no implementation behind it
+(user management), which is also why `Employee.user_id` has to be seeded.
+
+### Files created
+
+- `docs/rbac-audit.md` - the complete audit, 395 cells.
+- `harmonix360/backend/scripts/rbac_audit.py` - the reproducible probe.
+- `harmonix360/backend/scripts/demo_scenarios.py` - both PRD §7 scenarios.
+- `harmonix360/frontend/src/routes/profile/MyProfilePage.tsx` - "view own profile".
+
+### Files modified
+
+- `harmonix360/backend/app/seed.py` - roster, paid payrun, PDF verification,
+  employee-login link, attendance-window helper.
+- `harmonix360/backend/app/jobs/broker.py` - the Redis `socket_timeout` fix
+  described above (was uncommitted, on no branch).
+- `harmonix360/backend/tests/test_gap_integration.py` - see below.
+- `harmonix360/frontend/src/router.tsx`, `src/lib/navigation.ts`, `index.html` -
+  My Profile route, nav entry, product title.
+- `ROADMAP.md`, `progress.md`.
+
+### The one test that had to change, and why it is not weaker
+
+`test_seed_does_not_create_or_rewrite_legacy_payslips` asserted that the whole
+`payslips` table was byte-identical after running `seed()` twice. The seed now
+has its own paid demo payrun, so that assertion would be asserting the demo
+dataset does not exist. It is replaced by the two claims that actually matter,
+both **stronger** than the old equality in the dimension that counts:
+
+1. **Preservation** - every row that existed before the seed ran is identical
+   afterwards, compared column by column. This is the real content of migration
+   018's promise: finalized history is never rewritten, repriced or backfilled.
+2. **Idempotence** - the second `seed()` adds nothing the first did not. A seed
+   that computed a fresh July on every run would duplicate payslips for one
+   period, which is precisely what `duplicate_payslip` exists to catch.
+
+### A second test changed: a genuinely racy lock assertion
+
+`tests/test_locks.py::test_same_entity_serializes` failed once in three full
+runs, on a **0.65 millisecond** inversion. It is inherited from the platform
+baseline, and its own docstring claims it asserts on ordering rather than
+elapsed time "so a slow machine makes the test slower rather than flaky". That
+claim was false for one of its assertions.
+
+Both coroutines share one event loop. `holder_committed` is appended only when
+the loop resumes the holder **after** its COMMIT round-trip returns — but
+Postgres releases the advisory lock *at* COMMIT, so the contender can unblock
+and append `contender_acquired` in between. The assertion
+`contender_acquired >= holder_committed` was therefore comparing scheduling
+order, and proved nothing about the lock.
+
+It now compares against `holder_about_to_commit`, which is logged **inside**
+the transaction while the lock is still held, and adds an assertion the old
+version could not make: that the contender actually **blocked for the whole
+hold** (`waited >= HOLD_SECONDS * 0.9`). That is stronger than an ordering
+comparison, not weaker — scheduling order cannot fake a 0.75-second wait. Six
+consecutive runs of the module pass.
+
+No other test was modified. No assertion anywhere was relaxed.
+
+### Validation record
+
+- **Backend suite: 349 passed**, zero failures or skips, against a freshly
+  created PostgreSQL database migrated to `019_payslip_delivery` and seeded.
+  That is 339 inherited plus Phase 5's 10 payslip-document tests.
+- **RBAC audit: 395/395 cells match Architecture §5.**
+- **Demo scenarios: both PRD §7 scenarios pass end to end**, no manual DB edits.
+- **UI pass: 29/29 browser checks, 0 HTTP 5xx.** One `pageerror` is logged: the
+  deliberate contract-overlap `ApiError` surfaces as an unhandled rejection in
+  the console. The form renders the message correctly; the console noise is
+  cosmetic and is recorded rather than hidden.
+- **Frontend: `npm run build` passes** `tsc -b` and the Vite production build.
+  The pre-existing large-bundle advisory remains.
+
+### Environment notes for whoever runs this next
+
+- **The suite must run in the backend container, not on the Windows host.**
+  WeasyPrint needs native Pango/Cairo libraries and the DejaVu fonts at
+  `PAYSLIP_FONT_DIR`; the image installs both (`fonts-dejavu-core`,
+  `libpango-1.0-0`), a bare Windows host has neither. On the host, five
+  `test_payslip_documents.py` tests fail with `NameError: name 'Document' is not
+  defined` from WeasyPrint's lazy import - an environment gap, not a defect.
+  Reproduce with:
+
+  ```
+  docker exec -w /app peoplepay360_backend pip install -r requirements-dev.txt
+  docker exec -e DATABASE_URL=<isolated db> -w /app peoplepay360_backend \
+    sh -c "alembic upgrade head && python -m app.seed && python -m pytest -q"
+  ```
+
+- `pip install -r requirements-dev.txt` inside the backend container adds
+  pytest/aiosmtpd/pypdf, which the runtime image does not carry. **It does not
+  survive a container recreate** - `docker compose up -d` on any service that
+  depends on the backend will drop it, which cost one test run this session.
+- Rehearsals were run against an **isolated scratch stack** inside the backend
+  container - a second uvicorn on port 8100 and its own taskiq worker, both
+  pointed at `peoplepay360_phase7` and **Redis database 1** - so the rehearsal
+  worker consumed its own queue rather than competing with the demo worker for
+  the shared one. That isolation is the only reason a rehearsal could be run
+  repeatedly without polluting the demo data.
+
+### The demo database needs a reset before the real demo
+
+`docker compose`'s `peoplepay360` database is **not pristine**, and this was not
+caused by Phase 7's seed:
+
+- Two hand-made employees (`Priya Sharma`, `Rahul Verma`) and a paid
+  `September Payrun` predate this session, from an earlier manual verification.
+- `employee@peoplepay360.com` was **already linked** to that hand-made Rahul
+  Verma, so the seed's link guard correctly refused to move it - which is why
+  the My Profile screenshot shows Rahul Verma rather than Lakshmi Prasad.
+- One validated `Demo Scenario ... - August 2026` run remains from the first
+  rehearsal, which was run against the demo database before the scratch stack
+  existed. A finalized run cannot be deleted (PS B6), so it cannot be removed
+  through the API. Its employee is soft-deleted and it is not selectable, so it
+  does not affect either scenario - but it is clutter with a rehearsal's name on it.
+
+None of this blocks the scenarios. For a clean stage, run
+`docker compose down -v && docker compose up -d`, which drops the volume and
+re-seeds from scratch. **That was not done here because dropping the volume
+destroys data this session did not create**, and that is the owner's call. On a
+fresh database the seed produces a fully coherent dataset - verified on
+`peoplepay360_phase7`, where the employee login links to Lakshmi Prasad as
+designed.
+
+### IS THE CORE DEMOABLE?
+
+**Yes.** Both PRD §7 scenarios run start to finish with no manual database
+intervention, in under ten seconds by API and comfortably inside five minutes by
+hand. All nine B-features and all seven A-features have real screens wired to
+real data. RBAC is enforced server-side for all five roles, proven by 395
+observed status codes. Payslip PDF generation and bulk email work end to end,
+verified by a downloaded PDF in the browser and a message in the SMTP catcher.
+Both required failure modes surface cleanly in the UI.
+
+Nothing blocks a clean five-minute demo of both scenarios. Two things should be
+done in the ten minutes before it, neither of which is a defect:
+
+1. **`docker compose down -v && docker compose up -d`** to get the pristine
+   seeded dataset, for the reasons above.
+2. Confirm the worker is up and Mailhog is reachable at `:8025` - the bulk-email
+   step is the one part of the demo that depends on a second process, and the
+   `broker.py` fix in this commit is what keeps that process alive.
+
+### Next work
+
+Phase 8 (offline sync, PS §5.3) is unblocked: this gate is closed. Register
+exactly `attendance` (check-in/out creation only) and `time_off_request`
+(creation only) in `app/services/sync_entities.py`, and wire the frontend's
+existing dormant `offline-db.ts` / `useOfflineMutation` / `OfflineBanner` onto
+those two flows. Do not register any payroll-adjacent entity, and do not build
+new sync infrastructure - the engine, the `sync_mutations` idempotency table and
+the IndexedDB outbox are all already present and tested.

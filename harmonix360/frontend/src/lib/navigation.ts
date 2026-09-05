@@ -3,6 +3,7 @@ import {
   CalendarDays,
   Clock,
   FileText,
+  UserCircle,
   Users,
   Wallet,
   type LucideIcon,
@@ -33,6 +34,12 @@ export interface NavItem {
  * most easily blurred by a nav that shows everything to everyone.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
+  // Employee-only, and deliberately first for that role: PRD §4's Employee
+  // stories start at "view own profile", and every other entry an Employee can
+  // see is a log of something rather than a record of them. HR roles already
+  // reach any employee through Employees, and their logins usually have no
+  // Employee row at all, so the entry would lead them to an empty page.
+  { name: 'My Profile', href: '/my-profile', icon: UserCircle, roles: [UserRole.EMPLOYEE] },
   { name: 'Employees', href: '/employees', icon: Users, roles: HR_ROLES },
   { name: 'Contracts', href: '/contracts', icon: FileText, roles: HR_ROLES },
   { name: 'Attendance', href: '/attendance', icon: Clock, roles: [...HR_ROLES, UserRole.EMPLOYEE] },

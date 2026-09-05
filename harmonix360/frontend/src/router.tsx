@@ -12,6 +12,7 @@ import { TimeOffPage } from './routes/time-off/TimeOffPage';
 import { PayrollPage } from './routes/payroll/PayrollPage';
 import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
 import { ReportsPage } from './routes/reports/ReportsPage';
+import { MyProfilePage } from './routes/profile/MyProfilePage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -39,6 +40,11 @@ const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Navigate to="/employees" replace /> },
+      // PRD §4's Employee user story opens with "view own profile". It is not
+      // one of B1's six HR sections, and it is not the HR employee screen with
+      // a filter on it either: it reads `/employees/me`, which scopes by the
+      // signed claim, so there is no id in the URL to point at someone else.
+      { path: 'my-profile', element: <MyProfilePage /> },
       { path: 'employees', element: <EmployeesPage /> },
       // Before ':employeeId', or "schedules" would be read as an employee id.
       { path: 'employees/schedules', element: <SchedulesPage /> },

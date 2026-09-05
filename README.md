@@ -111,6 +111,38 @@ demonstrated by logging in rather than described:
 Demo credentials, in version control on purpose. They are not a production
 credential path.
 
+The employee login is linked to a seeded Employee row, so "own records only"
+screens have something to scope by. No endpoint sets `Employee.user_id` — see
+the known-gaps table in [ROADMAP.md](ROADMAP.md) — so without that seeded link
+the Employee role cannot be demonstrated without editing the database by hand.
+
+### What the seed contains
+
+`python -m app.seed` is idempotent and produces a whole demo organisation:
+four departments, the five logins above, a six-rule salary structure including
+Loss of Pay, a five-person roster across all four departments with schedules,
+bank accounts and open-ended active contracts, July and August attendance, and
+**a finalized (paid) July 2026 payrun** whose payslips print.
+
+**August 2026 is left uncomputed on purpose.** It is the live demo period, and
+a pre-computed one would hand every employee a blocking `duplicate_payslip` at
+Compute. The Loss-of-Pay employee's August computes to LOP 4,285.71 and net
+37,514.29 — the same figures the golden test pins.
+
+### Verifying a demo before you give it
+
+Both from `harmonix360/backend`, against a running stack:
+
+```
+python -m scripts.rbac_audit        # 79 endpoints x 5 roles, exit 1 on any mismatch
+python -m scripts.demo_scenarios    # PRD §7 scenario 1 and 2, end to end
+```
+
+`demo_scenarios` creates and then removes what it can. A finalized payrun
+cannot be deleted (PS B6), so rehearse against a scratch database if you do not
+want the run left behind. See [docs/rbac-audit.md](docs/rbac-audit.md) for the
+full permission matrix as observed status codes.
+
 ---
 
 ## Working on the backend directly
