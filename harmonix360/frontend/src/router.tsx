@@ -1,32 +1,65 @@
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
+
 import { AppShell } from './components/layout/AppShell';
-import { NotesPage } from './routes/notes/NotesPage';
+import { SectionStub } from './routes/SectionStub';
 
-function EmptyDashboard() {
-  return (
-    <div className="flex flex-col items-center justify-center h-full text-center gap-2 py-24">
-      <h1 className="text-xl font-semibold text-slate-200">No Product Surface registered</h1>
-      <p className="text-sm text-slate-500 max-w-md">
-        This is a bare scaffold. Domain pages get built fresh per problem statement and routed
-        here.
-      </p>
-    </div>
-  );
-}
-
+/**
+ * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
+ * Time Off, Payroll, Reports.
+ *
+ * Every section is present and routed from Phase 0 so the navigation is real
+ * rather than aspirational; each renders a stub naming the PS features it
+ * covers and the phase that delivers them, and each is replaced in place as
+ * that phase lands.
+ *
+ * `/` redirects to `/employees` instead of rendering a dashboard of its own.
+ * PS B9's dashboard lives under Reports, and inventing a second landing page
+ * would leave two screens competing to be "home".
+ */
 const router = createBrowserRouter([
   {
     path: '/',
     element: <AppShell />,
     children: [
+      { index: true, element: <Navigate to="/employees" replace /> },
       {
-        index: true,
-        element: <EmptyDashboard />,
+        path: 'employees',
+        element: <SectionStub name="Employees" features="A1 Employee Master, B2 Employee Form hub" phase="Phase 1" />,
       },
       {
-        path: 'notes',
-        element: <NotesPage />,
+        path: 'contracts',
+        element: <SectionStub name="Contracts" features="A2 Contract Management" phase="Phase 1" />,
       },
+      {
+        path: 'attendance',
+        element: <SectionStub name="Attendance" features="B3 Check In/Out, Worked Hours, corrections" phase="Phase 2" />,
+      },
+      {
+        path: 'time-off',
+        element: (
+          <SectionStub
+            name="Time Off"
+            features="A4 Types & Allocations, B4 approve/refuse workflow"
+            phase="Phase 2"
+          />
+        ),
+      },
+      {
+        path: 'payroll',
+        element: (
+          <SectionStub
+            name="Payroll"
+            features="A5/A6 Salary Structures & Rules, B5-B8 Payrun, Payslip, PDF, email"
+            phase="Phases 3-5"
+          />
+        ),
+      },
+      {
+        path: 'reports',
+        element: <SectionStub name="Reports" features="A7 Reporting Config, B9 Payroll Dashboard" phase="Phase 6" />,
+      },
+      // Anything else lands on Employees rather than a blank screen.
+      { path: '*', element: <Navigate to="/employees" replace /> },
     ],
   },
 ]);

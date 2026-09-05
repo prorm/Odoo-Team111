@@ -2,9 +2,9 @@
 
 **Source of truth for scope:** Odoo Hackathon Problem Statement (`PeoplePay360_HR___Payroll.pdf`). Every requirement in it is a hard requirement — nothing in PS §4 (A1–A7, B1–B9) is optional, and nothing below waters that down.
 **Team size:** 2 engineers.
-**Base codebase:** ForgeERP (generic FastAPI/React framework, proven infra for repository/service patterns, audit, RBAC, AI provider routing, MCP tooling, offline sync, observability — no HR domain content exists in it today).
+**Base codebase:** Harmonix360 (generic FastAPI/React framework, proven infra for repository/service patterns, audit, RBAC, AI provider routing, MCP tooling, offline sync, observability — no HR domain content exists in it today).
 
-**v2 change from v1:** v1 stripped ForgeERP's AI/MCP/offline-sync/realtime/observability infrastructure because the PS doesn't ask for it. That decision is reversed. The PS remains the entire mandatory core — untouched — and ForgeERP's advanced infrastructure is reinstated as an explicit, optional **differentiation layer** built on top of it, after the core is demoable. See §5.
+**v2 change from v1:** v1 stripped Harmonix360's AI/MCP/offline-sync/realtime/observability infrastructure because the PS doesn't ask for it. That decision is reversed. The PS remains the entire mandatory core — untouched — and Harmonix360's advanced infrastructure is reinstated as an explicit, optional **differentiation layer** built on top of it, after the core is demoable. See §5.
 
 ---
 
@@ -91,7 +91,7 @@ Directly from PS §4 — nothing added, nothing dropped, nothing weakened by the
 These are **not** core acceptance criteria. They do not gate the hackathon deliverable. They are explicitly designed, and built after the core is stable, to make the product a technically ambitious, AI-native, resilient, and observable platform — not a bare CRUD app.
 
 ### 5.1 AI Intelligence
-Reinstated from ForgeERP's provider-routing infrastructure (Groq → Cerebras fallback), adapted to HR/Payroll. **AI never calculates payroll** — deterministic Salary Rules remain the sole authority for money. AI's role is explanation, investigation, and controlled, human-confirmed action:
+Reinstated from Harmonix360's provider-routing infrastructure (Groq → Cerebras fallback), adapted to HR/Payroll. **AI never calculates payroll** — deterministic Salary Rules remain the sole authority for money. AI's role is explanation, investigation, and controlled, human-confirmed action:
 - "Why did Rahul's salary increase this month?"
 - "Why is Engineering payroll 14% higher?"
 - "Which employees are blocking payroll?"
@@ -104,7 +104,7 @@ For any mutating request, AI proposes → explains → asks confirmation → cal
 Reinstated FastMCP server exposing safe, curated business capabilities — never raw SQL, never unrestricted DB access. Read tools (`get_employee`, `get_leave_balance`, `get_payrun_summary`, `explain_payslip`, `find_payroll_anomalies`, `find_contract_conflicts`, etc.) and controlled action tools (`create_time_off_request`, `approve_time_off_request`, `correct_attendance`, `create_payrun`) — every mutating tool authenticates, authorizes, runs full validation, and audits, through the identical service layer the UI uses.
 
 ### 5.3 Offline Sync
-Reinstated ForgeERP's offline layer (IndexedDB outbox, reachability detection, sync engine, idempotency, optimistic concurrency, conflict handling), re-scoped from its original proof entities (Notes/Asset) to **Attendance check-in/check-out and Time Off Request creation only** — the two operations an employee plausibly needs offline. Payroll mutations are never offline-capable. No duplicate records survive a retried sync (client mutation IDs + Idempotency-Key + versioning).
+Reinstated Harmonix360's offline layer (IndexedDB outbox, reachability detection, sync engine, idempotency, optimistic concurrency, conflict handling), re-scoped from its original proof entities (Notes/Asset) to **Attendance check-in/check-out and Time Off Request creation only** — the two operations an employee plausibly needs offline. Payroll mutations are never offline-capable. No duplicate records survive a retried sync (client mutation IDs + Idempotency-Key + versioning).
 
 ### 5.4 Realtime
 Optional WebSocket/SSE presentation layer over committed DB state — REST/API remains authoritative. Used for: a check-in appearing instantly on the HR dashboard, a new leave request appearing instantly for the manager, a balance updating instantly for the employee on approval, live payroll-compute and bulk-email-send progress.
@@ -183,9 +183,9 @@ If time runs out, P3 drops first, then P2, then P1 — **P0 never drops.** Nothi
 
 ## 10. Not Restored / Explicitly Out of Scope
 
-A few ForgeERP capabilities remain cut because there's no analogous PeoplePay360 use case, not because "PS-only" thinking crept back in:
+A few Harmonix360 capabilities remain cut because there's no analogous PeoplePay360 use case, not because "PS-only" thinking crept back in:
 
-- **pgvector semantic search** — ForgeERP's version was "semantic search over assets/documents"; there's no assets/documents domain here, and nothing in §5's differentiation list calls for document search. Not restored.
+- **pgvector semantic search** — Harmonix360's version was "semantic search over assets/documents"; there's no assets/documents domain here, and nothing in §5's differentiation list calls for document search. Not restored.
 - **Generic AssetFlow domain entities** (`Asset`, `TransferRequest`, `ResourceBooking`, `MeetingRoom`) — wrong domain regardless of which infra layer is kept.
 - **Generic state-machine workflow engine** — Time Off approve/refuse stays a simple status transition. The reinstated "AI decision node" pattern (propose → human confirm → execute) is used specifically for AI-initiated mutations (§5.1), not as a general-purpose workflow engine for ordinary HR actions.
 - **Multi-tenancy / Row-Level Security** — no requirement, no reason to add.

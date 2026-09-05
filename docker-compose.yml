@@ -1,24 +1,67 @@
+# PeoplePay360 — one Compose file, two profiles (Architecture §12).
+#
+#   docker compose up --build
+#       The CORE profile: postgres, redis, backend, worker, frontend.
+#       Everything PS §4 requires. Needs no Groq/Cerebras key, no MCP process
+#       and no SigNoz. This is what Phases 1-7 develop and demo against.
+#
+#   docker compose --profile advanced up --build
+#       The above PLUS the Platform/Intelligence layer: mcp-server and the
+#       OpenTelemetry collector (Architecture §12). Phase 8+.
+#
+# One file rather than two, deliberately. Two files drift: a database URL fixed
+# in one and forgotten in the other produces a stack that works in core and
+# fails only in advanced, which is the worst time to find out. A service with
+# no `profiles:` key always starts; a service with `profiles: [advanced]`
+# starts only when that profile is named. So the core stack is the default by
+# omission, and the advanced stack is strictly additive.
+#
+# AI provider keys are optional even under `advanced`: the AI layer degrades to
+# "unavailable" without them and never to a fabricated answer (PRD §8).
+
+x-backend-env: &backend-env
+  # Anchored so the backend, the worker and the MCP server cannot drift apart.
+  # The two roles mirror migration 001: alembic runs as the owner, the app
+  # connects as the lower-privileged role that cannot UPDATE or DELETE
+  # audit_logs.
+  DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/peoplepay360
+  MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/peoplepay360
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:-peoplepay360-dev-jwt-secret-change-in-production}
+  HASHID_SALT: ${HASHID_SALT:-harmonix360-secret-salt-change-in-prod}
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  # Optional; absent in the core profile by design.
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-peoplepay360-mcp-dev-key}
+  # Off unless the advanced profile brings a collector up. With no collector
+  # listening, an enabled tracer retries an OTLP export on every request.
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+
 services:
+  # ------------------------------------------------------------------ core
   postgres:
     image: postgres:16-alpine
-    container_name: harmonix360_postgres
+    container_name: peoplepay360_postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: harmonix360
+      POSTGRES_DB: peoplepay360
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d harmonix360"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d peoplepay360"]
       interval: 3s
       timeout: 3s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    container_name: harmonix360_redis
+    container_name: peoplepay360_redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -31,17 +74,22 @@ services:
     build:
       context: ./harmonix360/backend
       dockerfile: Dockerfile
-    container_name: harmonix360_backend
-    environment:
-      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
-      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/harmonix360
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: harmonix360-dev-jwt-secret-change-in-production
-      HASHID_SALT: harmonix360-secret-salt-change-in-prod
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
+    container_name: peoplepay360_backend
+    environment: *backend-env
+    # Migrate, then seed, then serve — in one command rather than an entrypoint
+    # script so a failure at either step stops the container with the actual
+    # error visible in `docker compose logs backend`, instead of starting an
+    # app against a schema that is one revision behind.
+    #
+    # Seeding on every start is safe because `app.seed` is idempotent, and it
+    # is what makes `docker compose up` from a clean clone produce a stack you
+    # can immediately log into. Without it the app comes up healthy with an
+    # empty users table and every login returns 401, which reads like a broken
+    # build rather than an empty database.
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
     volumes:
@@ -56,46 +104,17 @@ services:
     build:
       context: ./harmonix360/backend
       dockerfile: Dockerfile
-    container_name: harmonix360_worker
+    container_name: peoplepay360_worker
+    # Task modules are listed explicitly; taskiq imports exactly these. The
+    # AssetFlow tasks (notifications, transfer_decision, booking_decision) were
+    # deleted with their domain. ai_jobs stays — it is the generic
+    # provider-routing task the AI layer reuses in Phase 9 — and Phase 5 adds
+    # payroll_jobs here for PDF generation and bulk email.
     command: >
       taskiq worker app.jobs.broker:broker
-      app.jobs.tasks.notifications
       app.jobs.tasks.ai_jobs
-      app.jobs.tasks.transfer_decision
-      app.jobs.tasks.booking_decision
       --max-async-tasks 4
-    environment:
-      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
-      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/harmonix360
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: harmonix360-dev-jwt-secret-change-in-production
-      HASHID_SALT: harmonix360-secret-salt-change-in-prod
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
-    volumes:
-      - ./harmonix360/backend:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  mcp-server:
-    build:
-      context: ./harmonix360/backend
-      dockerfile: Dockerfile
-    container_name: harmonix360_mcp_server
-    command: ["python", "-m", "app.mcp.server"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/harmonix360
-      REDIS_URL: redis://redis:6379/0
-      HASHID_SALT: harmonix360-secret-salt-change-in-prod
-      MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-harmonix360-mcp-dev-key}
-      MCP_SERVER_PORT: "8100"
-    ports:
-      - "8100:8100"
+    environment: *backend-env
     volumes:
       - ./harmonix360/backend:/app
     depends_on:
@@ -108,22 +127,47 @@ services:
     build:
       context: ./harmonix360/frontend
       dockerfile: Dockerfile
-    container_name: harmonix360_frontend
+    container_name: peoplepay360_frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
 
-  # TODO: Add otel-collector + signoz stack
-  # TODO: Add ollama service once available locally
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: harmonix360_ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
+  # -------------------------------------------------------------- advanced
+  # Everything below starts ONLY with `--profile advanced`.
+
+  mcp-server:
+    profiles: ["advanced"]
+    build:
+      context: ./harmonix360/backend
+      dockerfile: Dockerfile
+    container_name: peoplepay360_mcp_server
+    # A separate process from the FastAPI app, on Streamable HTTP transport
+    # (Architecture §8.2) — not mounted into the API.
+    command: ["python", "-m", "app.mcp.server"]
+    environment:
+      <<: *backend-env
+      MCP_SERVER_PORT: "8100"
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./harmonix360/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  otel-collector:
+    profiles: ["advanced"]
+    image: otel/opentelemetry-collector-contrib:0.113.0
+    container_name: peoplepay360_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./harmonix360/observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP — what the backend exports to
 
 volumes:
   pgdata:
-  # ollama_data:

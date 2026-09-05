@@ -1,21 +1,65 @@
-# OpenTelemetry Collector Configuration Placeholder (Week 3 integration)
+# OpenTelemetry Collector — the `advanced` Compose profile's trace sink.
+#
+# Architecture §8.5 names SigNoz as the destination. What runs here by default
+# is the collector plus a debug exporter, NOT a full SigNoz deployment, and
+# that is a deliberate scope choice: SigNoz's own stack is ClickHouse plus four
+# more services, which is a lot of laptop for a demo whose actual requirement
+# is "a payroll-compute trace is visible end to end". The collector is the part
+# the application talks to; where it forwards spans is one exporter block.
+#
+# To send to a real SigNoz, add its exporter and list it in the traces
+# pipeline — nothing in the application changes:
+#
+#   exporters:
+#     otlp/signoz:
+#       endpoint: <signoz-otel-collector-host>:4317
+#       tls: {insecure: true}
+#   service:
+#     pipelines:
+#       traces:
+#         exporters: [debug, otlp/signoz]
+#
+# Architecture §8.5 also limits what should ever arrive here: three named
+# traces (payroll compute, AI/MCP, offline sync), not blanket instrumentation.
+# The goal is a demonstrable "every payroll calculation is traceable" moment,
+# and blanket tracing buries exactly that.
+
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
       http:
+        # What the backend exports to (OTEL_EXPORTER_OTLP_ENDPOINT).
         endpoint: 0.0.0.0:4318
 
+processors:
+  # Bounds collector memory so a burst of spans during a payroll compute
+  # cannot push the container into an OOM kill.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
 exporters:
-  logging:
-    loglevel: debug
+  # `debug`, not the old `logging` exporter — that alias was removed from the
+  # collector in the 0.10x series and its config is now a startup error.
+  debug:
+    verbosity: detailed
 
 service:
+  telemetry:
+    logs:
+      level: info
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [logging]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
-      exporters: [logging]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

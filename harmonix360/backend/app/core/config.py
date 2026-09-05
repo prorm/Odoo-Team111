@@ -4,17 +4,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 # The .env lives at the REPO ROOT, but local commands run from
-# harmonix360/backend/ (alembic, pytest, uvicorn, the verify_* scripts). A bare
-# env_file=".env" resolves against the CWD, so it silently found nothing and
-# every setting fell back to its default â€” including DATABASE_URL's
-# "@postgres:5432", a hostname that only resolves inside docker compose. Anchor
-# the path to this file instead so it works from any working directory.
+# harmonix360/backend/ (alembic, pytest, uvicorn). A bare env_file=".env"
+# resolves against the CWD, so it silently found nothing and every setting fell
+# back to its default — including DATABASE_URL's "@postgres:5432", a hostname
+# that only resolves inside docker compose. Anchoring the paths to THIS FILE
+# instead makes them work from any working directory.
 #
 # Both locations are listed; a backend-local .env (if anyone adds one) wins over
 # the repo-root file. OS environment variables still take precedence over both,
 # so docker compose's `environment:` block continues to override this unchanged.
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+#
+# The walk up is computed defensively rather than as a fixed `parents[4]`. On a
+# developer's machine this file sits at <repo>/harmonix360/backend/app/core/,
+# four levels below the repo root — but the Docker image mounts the backend at
+# /app, so the same file is only three levels below the filesystem root and a
+# fixed index raises IndexError at import. Since `settings` is imported by
+# alembic/env.py and app/main.py alike, that turns into a container that dies
+# before it can report anything more useful.
+_HERE = Path(__file__).resolve()
+_BACKEND_ROOT = _HERE.parents[2]  # .../backend — always present
+_REPO_ROOT = _HERE.parents[4] if len(_HERE.parents) > 4 else _BACKEND_ROOT
 ENV_FILES = (_REPO_ROOT / ".env", _BACKEND_ROOT / ".env")
 
 
@@ -58,6 +67,10 @@ class Settings(BaseSettings):
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(default="http://signoz-otel-collector:4318", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     SENTRY_DSN: str = Field(default="", validation_alias="SENTRY_DSN")
+    #: Sentry's own verbose logging. Off by default — it prints a line per
+    #: integration and per transport flush, which drowns out uvicorn's startup
+    #: output in container logs.
+    SENTRY_DEBUG: bool = Field(default=False, validation_alias="SENTRY_DEBUG")
     # Off by default: SigNoz only runs under `docker compose --profile advanced`
     # (Architecture §12), so the core profile, pytest and CI would otherwise
     # spend every request retrying an OTLP export against a host that isn't

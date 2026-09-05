@@ -1,7 +1,7 @@
 """
 OpenTelemetry & Sentry Observability Configuration for Harmonix360.
 
-Architecture ref: Section 7 â€” Observability
+Architecture ref: Section 7 — Observability
 1. OpenTelemetry auto-instrumentation for FastAPI, SQLAlchemy, Redis, and HTTPX.
 2. OTLP Exporter targeting SigNoz.
 3. Sentry SDK integration for exception tracking with breadcrumbs.
@@ -65,8 +65,15 @@ def setup_telemetry(app=None, engine=None):
             integrations=[FastApiIntegration()],
             traces_sample_rate=1.0,
             profiles_sample_rate=1.0,
-            send_default_pii=True,
-            debug=True,
+            # send_default_pii stays False: this is an HR and payroll system,
+            # so "default PII" here means employee names, work emails and
+            # request bodies containing salaries, shipped to a third-party
+            # error tracker. Sentry needs the stack trace, not the payroll.
+            send_default_pii=False,
+            # Not `debug=True`. That prints a line per integration and per
+            # transport flush on every process start, which buried the actual
+            # uvicorn startup output in `docker compose logs backend`.
+            debug=settings.SENTRY_DEBUG,
             environment=settings.ENVIRONMENT,
         )
         logger.info("Sentry SDK initialized with DSN.")

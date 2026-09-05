@@ -1,6 +1,6 @@
 # PeoplePay360 — System Architecture (v2)
 
-Base repo: fork ForgeERP in full (`git clone` → `peoplepay360/`). This document supersedes v1. The change from v1: ForgeERP's advanced infrastructure (AI, MCP, offline sync, realtime, observability) is **reinstated**, adapted to the HR/Payroll domain, and organized as an explicit **Platform/Intelligence layer** sitting alongside the **Core Domain**, both built on the same Shared Business Layer. AssetFlow's actual domain entities (Asset, TransferRequest, ResourceBooking, MeetingRoom) are still removed — wrong domain regardless of which infra survives.
+Base architecture: Harmonix360 platform architecture (in `harmonix360/`). This document defines the PeoplePay360 HR & Payroll system built on top of Harmonix360. Harmonix360's advanced infrastructure (AI, MCP, offline sync, realtime, observability) is adapted to the HR/Payroll domain and organized as an explicit **Platform/Intelligence layer** sitting alongside the **Core Domain**, both built on the same Shared Business Layer. Domain models are aligned strictly to the HR and Payroll scope.
 
 ```
                          PEOPLEPAY360
@@ -46,7 +46,7 @@ Base repo: fork ForgeERP in full (`git clone` → `peoplepay360/`). This documen
 ### Reinstated — Platform/Intelligence layer
 | Layer | Technology | Notes |
 |---|---|---|
-| AI inference | Groq (primary) + Cerebras (fallback), via ForgeERP's `AIProvider` router | Retargeted at HR/Payroll explanation/investigation prompts, never at computing money |
+| AI inference | Groq (primary) + Cerebras (fallback), via Harmonix360's `AIProvider` router | Retargeted at HR/Payroll explanation/investigation prompts, never at computing money |
 | AI orchestration | FastMCP, separate process, Streamable HTTP transport | HR/Payroll tool set (§9) replaces the original asset/booking tool set |
 | Offline | `idb` (IndexedDB) on frontend, `SyncMutation` + sync registry on backend | Re-scoped from Notes/Asset to Attendance + TimeOffRequest only |
 | Realtime | FastAPI native WebSockets | Presentation layer only, over committed DB state |
@@ -54,7 +54,7 @@ Base repo: fork ForgeERP in full (`git clone` → `peoplepay360/`). This documen
 
 ---
 
-## 2. ForgeERP Modules — Retained / Adapted / Removed
+## 2. Harmonix360 Modules — Retained / Adapted / Removed
 
 ### Retained unchanged (domain-agnostic infra)
 | Module | Use in PeoplePay360 |
@@ -77,7 +77,7 @@ Base repo: fork ForgeERP in full (`git clone` → `peoplepay360/`). This documen
 | `app/ai/provider_router.py`, `cache.py`, `decision_nodes.py` | Generic transfer-approval AI decisions | HR/Payroll Q&A + anomaly interpretation; `decision_nodes.py` becomes the "AI proposes a mutation, human confirms" pattern for AI-initiated writes only |
 | `app/mcp/server.py` | Asset/booking tools | HR/Payroll read + controlled-action tools (§9) |
 | Offline sync (`sync_registry.py`, `sync_entities.py`, `sync.py`, `SyncMutation`, frontend `offline-db.ts`/`reachability.ts`/`sync-engine.ts`/`useOfflineMutation.ts`/`OfflineBanner`/`ConflictModal`) | `note`, `asset` | `attendance`, `time_off_request` registered as the syncable entities instead — same generic engine, new registrations, zero new sync-engine code |
-| `app/realtime/ws_manager.py` (never built in ForgeERP) | n/a | Check-in/leave-request/approval/payroll-progress broadcast |
+| `app/realtime/ws_manager.py` (native WebSocket layer in Harmonix360) | n/a | Check-in/leave-request/approval/payroll-progress broadcast |
 | OTel/SigNoz | Generic instrumentation | 3 named traces only (§10) |
 
 ### Removed (wrong domain, no amount of "keep the infra" argument saves these)
@@ -93,7 +93,7 @@ Base repo: fork ForgeERP in full (`git clone` → `peoplepay360/`). This documen
 ## 3. Repository Structure
 
 ```
-forgeerp/backend/app/
+harmonix360/backend/app/
 ├── models/
 │   ├── employee.py, contract.py, working_schedule.py, attendance.py   # NEW
 │   ├── time_off.py, salary.py, payroll.py                              # NEW
@@ -163,7 +163,7 @@ All entities except pure line-item children get `AuditedEntity` (audit + `versio
 | Payruns/Payslips | — | — | CRU | CRUD | CRUD |
 | User mgmt / role assignment | — | — | — | — | CRUD |
 
-**This matrix applies identically to MCP tool calls and AI-initiated actions** — an MCP tool wraps the same `require_role`-guarded service method the REST router calls; there is no separate, looser permission model for agent access (ForgeERP's original design used a narrower API-key scope for MCP — for PeoplePay360, an MCP session is bound to an authenticated user's role, since the demo scenario is "Claude acting as/for a specific HR user," not an anonymous agent).
+**This matrix applies identically to MCP tool calls and AI-initiated actions** — an MCP tool wraps the same `require_role`-guarded service method the REST router calls; there is no separate, looser permission model for agent access (Harmonix360's original design used a narrower API-key scope for MCP — for PeoplePay360, an MCP session is bound to an authenticated user's role, since the demo scenario is "Claude acting as/for a specific HR user," not an anonymous agent).
 
 ---
 
@@ -195,12 +195,12 @@ This holds regardless of entry point: an MCP `create_payrun` tool call and offli
 ## 8. Platform / Intelligence Layer — Detailed Design
 
 ### 8.1 AI Layer
-`app/ai/provider_router.py` (Groq → Cerebras fallback, unchanged mechanism from ForgeERP) is retargeted with HR/Payroll prompt templates for: payslip explanation, department payroll variance explanation, "who is blocking payroll," anomaly narration, pending-actions summarization. Every AI call is queued through Taskiq (unchanged from ForgeERP — routers enqueue, return `202`, frontend polls/listens), Redis-cached by `(prompt, context, task_type)`, and rate-limited per provider.
+`app/ai/provider_router.py` (Groq → Cerebras fallback, unchanged mechanism from Harmonix360) is retargeted with HR/Payroll prompt templates for: payslip explanation, department payroll variance explanation, "who is blocking payroll," anomaly narration, pending-actions summarization. Every AI call is queued through Taskiq (unchanged from Harmonix360 — routers enqueue, return `202`, frontend polls/listens), Redis-cached by `(prompt, context, task_type)`, and rate-limited per provider.
 
 `app/ai/decision_nodes.py` is repurposed specifically for **AI-initiated mutations**: an AI decision node proposes an action (e.g., "submit 1 day of leave for Rahul next Friday") with a written rationale, sets state to `PENDING_REVIEW`, and a human must explicitly confirm before the identical authorized service method actually runs. The proposal, the AI's raw output, and the human confirmation are all written to the audit log.
 
 ### 8.2 MCP Layer
-`app/mcp/server.py`, FastMCP, Streamable HTTP, separate process (unchanged deployment shape). Tool set, hand-written per ForgeERP's own rule (no `FastMCP.from_fastapi()` auto-conversion):
+`app/mcp/server.py`, FastMCP, Streamable HTTP, separate process (unchanged deployment shape). Tool set, hand-written per Harmonix360's own rule (no `FastMCP.from_fastapi()` auto-conversion):
 
 **Read tools:** `get_employee`, `get_employee_contracts`, `get_attendance_summary`, `get_leave_balance`, `get_pending_time_off`, `get_payrun_summary`, `get_payslip`, `explain_payslip`, `get_payroll_warnings`, `get_department_payroll`, `get_payroll_trends`, `find_payroll_anomalies`, `find_contract_conflicts`.
 
@@ -209,7 +209,7 @@ This holds regardless of entry point: an MCP `create_payrun` tool call and offli
 Every mutating tool: authenticates → authorizes via §5's matrix → invokes the same service the UI calls → runs full validation → writes an audit event with `actor = "ai-agent"` (or the impersonated user, per §5) → respects idempotency/concurrency identically to the REST path. No tool executes raw SQL or bypasses a repository/service method.
 
 ### 8.3 Offline Sync Layer
-ForgeERP's generic sync engine (cursor-based pull, per-op idempotent push, savepoint-per-operation, `Keep Mine`/`Overwrite` conflict resolution) is unchanged mechanically. What changes is the registration: `app/services/sync_entities.py` registers `attendance` (check-in/check-out only, not corrections — corrections stay online-only and role-gated) and `time_off_request` (create only) as the syncable entities, replacing `note`/`asset`. Payroll, Salary Rule, Contract, and every other core entity is deliberately **not** registered — offline capability is opt-in per entity by registry membership, and payroll entities are never opted in.
+Harmonix360's generic sync engine (cursor-based pull, per-op idempotent push, savepoint-per-operation, `Keep Mine`/`Overwrite` conflict resolution) is unchanged mechanically. What changes is the registration: `app/services/sync_entities.py` registers `attendance` (check-in/check-out only, not corrections — corrections stay online-only and role-gated) and `time_off_request` (create only) as the syncable entities, replacing `note`/`asset`. Payroll, Salary Rule, Contract, and every other core entity is deliberately **not** registered — offline capability is opt-in per entity by registry membership, and payroll entities are never opted in.
 
 ```
 DEVICE → IndexedDB outbox → [offline] → queued mutations → [reconnect]
@@ -217,7 +217,7 @@ DEVICE → IndexedDB outbox → [offline] → queued mutations → [reconnect]
   → audit → pull → UI reconciliation
 ```
 
-Client mutation IDs + the existing `Idempotency-Key`/`sync_mutations` idempotency check prevent duplicate attendance/leave records across retries — this is the same mechanism already proven in ForgeERP's offline-sync pass, just pointed at new entities.
+Client mutation IDs + the existing `Idempotency-Key`/`sync_mutations` idempotency check prevent duplicate attendance/leave records across retries — this is the same mechanism already proven in Harmonix360's offline-sync pass, just pointed at new entities.
 
 ### 8.4 Realtime Layer
 Native FastAPI WebSockets, one channel per concern: attendance check-ins (broadcast to HR dashboard), new time-off requests (broadcast to approvers), approval outcomes (broadcast to the requesting employee), payroll compute/bulk-email progress (broadcast to the initiating Payroll user's session). Every broadcast fires **after** a committed transaction — the socket is a notification of already-true state, never a store of truth. If the socket layer is down, REST/refetch still produces correct results; this is why realtime is P1/P2, not P0.
@@ -228,7 +228,7 @@ Three named traces only:
 - **AI/MCP**: Claude → MCP tool → service → DB → AI response.
 - **Offline sync**: client mutation → sync attempt → validation → DB transaction → audit.
 
-Sentry remains for error tracking as already proven in ForgeERP. No instrumentation is added outside these three traces — the goal is a demonstrable "every payroll calculation is traceable" moment, not blanket tracing.
+Sentry remains for error tracking as already proven in Harmonix360. No instrumentation is added outside these three traces — the goal is a demonstrable "every payroll calculation is traceable" moment, not blanket tracing.
 
 ### 8.6 Explainability, Anomaly Detection, Time Machine, Pay-Change Comparison, Validation Firewall, Simulation
 These are UI/service features built on top of core data, described fully in the PRD (§5.6–§5.11). Architecturally they are all **read-side** features (except Simulation, which is explicitly non-persistent) — none of them write to Payslip/Contract/Payrun outside the normal core flows:

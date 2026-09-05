@@ -6,7 +6,7 @@ import {
   updateOutboxEntry, type OutboxMutation,
 } from './offline-db';
 
-/** Entity types this frontend build syncs â€” mirrors the backend's
+/** Entity types this frontend build syncs — mirrors the backend's
  * app/services/sync_entities.py registrations. A new entry here is the only
  * change needed to start syncing another registered entity type. */
 // Must match what app/services/sync_entities.py registers on the backend.
@@ -48,7 +48,7 @@ function notify() {
 
 /** Sends one batch and reconciles each result into the outbox/cache/conflicts
  * stores. Returns the local ids of any CREATE that got a real public_id
- * assigned, keyed by the local placeholder id it replaces â€” `pushOutbox`
+ * assigned, keyed by the local placeholder id it replaces — `pushOutbox`
  * uses this to unblock sibling mutations that were still pointing at it. */
 async function sendBatch(pending: OutboxMutation[]): Promise<Map<string, { entityId: string; version: number }>> {
   const mutations = pending.map((m) => ({
@@ -74,7 +74,7 @@ async function sendBatch(pending: OutboxMutation[]): Promise<Map<string, { entit
 
     if (result.outcome === 'applied') {
       // A CREATE queued offline was cached under a local placeholder id
-      // (original.local_temp_id) â€” now that the server has assigned the
+      // (original.local_temp_id) — now that the server has assigned the
       // real public_id, migrate the cache row so reads key off the id every
       // other client will ever see.
       if (original.op === 'CREATE' && original.local_temp_id && result.entity_id) {
@@ -108,7 +108,7 @@ async function sendBatch(pending: OutboxMutation[]): Promise<Map<string, { entit
       // the row stays exactly as this client last wrote it until the user
       // resolves the conflict via the modal (Keep Mine / Overwrite).
     } else {
-      // rejected â€” a genuine validation/constraint failure, not a version
+      // rejected — a genuine validation/constraint failure, not a version
       // race. Nothing local to reconcile it against; drop it rather than
       // retry forever, but keep it visible for a human via console for now.
       console.error('sync/push rejected mutation', original, result.error);
@@ -123,7 +123,7 @@ async function pushOutbox(): Promise<void> {
   // Chained-dependency resolution: an UPDATE/DELETE queued offline against a
   // row that was ITSELF created offline in the same session still points at
   // that CREATE's local placeholder id (e.g. "local:<uuid>") until the CREATE
-  // round-trips and the server assigns a real public_id â€” the client can't
+  // round-trips and the server assigns a real public_id — the client can't
   // know that id before asking. Push whatever doesn't depend on an unresolved
   // local id first, resolve any siblings waiting on what just got created,
   // and repeat until nothing more can be unblocked locally.
@@ -135,7 +135,7 @@ async function pushOutbox(): Promise<void> {
     if (sendable.length === 0) return; // remaining entries depend on a CREATE that hasn't resolved (and won't, this run)
 
     const resolved = await sendBatch(sendable);
-    if (resolved.size === 0) return; // nothing left to unblock â€” done for this run
+    if (resolved.size === 0) return; // nothing left to unblock — done for this run
 
     const stillPending = await getPendingOutbox();
     for (const entry of stillPending) {
@@ -222,7 +222,7 @@ export async function resolveConflictOverwrite(clientMutationId: string): Promis
 }
 
 // Reconnect flow (offline-sync requirement): push the outbox first, then
-// pull â€” never the other way round, or a stale local write could look like
+// pull — never the other way round, or a stale local write could look like
 // it "won" against a pull that ran before it was ever sent.
 reachability.subscribe((online) => {
   if (online) void runSync();
