@@ -2647,3 +2647,141 @@ routes appear in `openapi.json` before trusting a demo run.
 - `frontend/vite.config.ts`, `frontend/nginx.conf` — WebSocket proxying
 - `frontend/src/router.tsx`, `lib/navigation.ts`, and the payslip, payrun and
   employee pages
+
+---
+
+## 2026-09-05 — Adversarial / failure-mode regression suite
+
+### Starting point and protocol
+
+- Fetched `origin`, read `origin/dev:progress.md`, and diffed its claims
+  against the code before writing anything. Base commit:
+  `cd823a17799c7d651066a51053e8db3e296ff3a2`. Every claim checked held:
+  `LOP_AMOUNT` in `SEED_CONTEXT_NAMES`, `lop_schedule_unavailable` emitted as
+  blocking, migration 018's three nullable JSONB columns, the seed creating no
+  payroll rows, and the suite at 339.
+- Branch `phase-11-prefix-tests`, cut from that tip. **Testing only** — no
+  production module was modified, and no feature behaviour was added or
+  changed.
+- Baseline before the new file, on a freshly created database migrated to 018
+  and seeded: **339 passed**.
+
+### What was added
+
+One file: `harmonix360/backend/tests/test_adversarial_failure_modes.py`,
+**14 collected cases** covering the eight requested scenarios (six of the
+fourteen are the parametrized invalid-formula shapes, and one is a second,
+lower-level assertion on the LOP edge case).
+
+Every case asserts the same three properties, through shared helpers
+(`assert_controlled`, `assert_explainable`) so the bar is enforced by code
+rather than described in prose:
+
+1. **Controlled** — a specific deliberate status code, and an explicit
+   `!= 500` assertion with its own message. A failure mode that 500s is
+   uncontrolled by definition.
+2. **Explainable** — the body must mention named terms a reader can act on
+   (`version`, `balance`, `missing_bank_details`, the offending rule code…).
+   An empty or generic body fails even when the status is right.
+3. **Uncorrupted** — the database is inspected DIRECTLY afterwards, past the
+   API's own filters, to prove the rejected operation wrote nothing. This is
+   the assertion that distinguishes the suite from the happy-path coverage
+   that already exists: a rejection that still committed a row would otherwise
+   read as a pass.
+
+### Results — 8 of 8 controlled and explainable, no bugs found
+
+| # | Scenario | Result | What was actually observed |
+|---|---|---|---|
+| 1 | Duplicate payrun compute | **PASS** | Stale-version replay → 409 naming `version`, no payslip written. Three computes leave exactly 1 payslip and a constant line count; zero orphaned `payslip_lines` |
+| 2 | Concurrent approval race on one allocation | **PASS** | Both approvals held at a barrier after reading the SAME allocation version (asserted). One approves, one 409s telling the user to refresh; neither crashes. `taken` is exactly 1.00 and never exceeds `allocated` |
+| 3 | Overlapping / invalid contract | **PASS** | Mid-range overlap → 409; single shared day (the inclusive `'[]'` bound) → 409; inverted dates → 422. Contract row count unchanged after all three. A contract starting the day AFTER still succeeds |
+| 4 | Missing bank details | **PASS** | Computes (does not block the whole run), blocking warning naming the employee, Validate → 409. Fixing the record alone does NOT unblock; only fix + recompute does |
+| 5 | Insufficient leave balance | **PASS** | 409 mentioning balance; allocation `taken` still 0.00 and its `version` unchanged — no partial debit; request stays `to_approve`. A fitting request still approves |
+| 6 | Invalid salary formula | **PASS** (6 shapes) | Injection shapes (`__import__(...)`, attribute access, subscript, malformed) → 422 at RULE-save. Forward reference and unknown name → 400 at STRUCTURE-save, naming the offending rule code. None reached a payrun |
+| 7 | Mutation of a PAID payslip | **PASS** | Recompute, rename, delete-payrun and delete-payslip each → 409 with an explanation. Gross, net, worked_days, status, version and line count re-read from the database are byte-identical afterwards; `deleted_at` still NULL |
+| 8 | LOP zero working days | **PASS** | See below |
+
+**No scenario produced an uncontrolled or unexplainable result, so nothing is
+escalated to the team from this suite.**
+
+### Scenario 8 in detail, since it was the one most likely to divide by zero
+
+Attacked with a schedule that is real and non-empty but has **no day inside
+the period** — a Sunday-only schedule over Monday 2026-09-07 to Saturday
+2026-09-12. That is nastier than "no schedule at all", because every naive
+guard of the form `if schedule is None` passes it straight through to the
+division.
+
+Observed, verbatim from the API:
+
+```
+COMPUTE -> 200
+  computed_count: 0
+  skipped: [{"employee_name": "Zero Days", "reason": "Zero Days has zero or
+     undetermined scheduled working days in this period. LOP_AMOUNT cannot be
+     calculated; fix the schedule and recompute."}]
+  blocking_issues: {"lop_schedule_unavailable": 1}
+
+VALIDATE -> 409
+  blocking_by_code: {"lop_schedule_unavailable": 1, "no_payslip": 1}
+  references: ["emp_…", "ctr_…"]
+
+payslips in run: 0
+```
+
+No `ZeroDivisionError`, no 500, and — the part that matters most — **no
+payslip built on a fabricated LOP**. A second case (`test_8b`) asserts the
+same edge one level down against `build_payroll_context` directly: with zero
+working days `LOP_AMOUNT` is **absent from the seed dict entirely**, not zero
+and not `None`, either of which a downstream formula would have consumed
+silently. `CONTRACT_WAGE` is still present, so the failure is scoped to LOP
+rather than poisoning the whole context.
+
+### One thing the team should know (not a bug, but it will bite again)
+
+`test_dashboard.py::test_attendance_health_is_schedule_derived_not_hardcoded`
+asserts `expected_working_days == 15` against an **org-wide, unfiltered**
+aggregate. It therefore fails whenever the database contains any active
+employee with a working schedule beyond its own fixture — regardless of
+whether that employee arrived from the seed, another suite, or a manual probe.
+
+It was seen failing once during this work with `21 == 15`, traced precisely to
+two rows left in the shared test database by other activity (a seeded demo
+employee on a Mon–Fri schedule contributing 5, and a manual probe employee on
+a Sunday-only schedule contributing 1, because 2026-09-13 is a Sunday). **The
+adversarial suite itself leaks nothing** — employee-with-schedule counts were
+measured before and after a full run of it and were identical.
+
+This is the same over-broad-assertion pattern that was corrected in three
+sibling tests during the Phase 4/6 integration. It is a test-isolation issue,
+not a dashboard defect: the query counted the employees because the employees
+existed. The `phase-7-prep` branch scopes this test by department the same way
+the siblings were scoped; that fix is deliberately NOT duplicated here,
+because this branch is testing-only.
+
+Practical consequence for whoever runs the suite next: **use a dedicated,
+freshly migrated and seeded database**, as the gap-fix handoff already
+advises. On a shared or long-lived database this one assertion is a false
+alarm waiting to happen.
+
+### Validation record
+
+- Full suite on a purpose-created database `peoplepay360_p11_tests`, migrated
+  to `018_payroll_snapshots` and seeded: **353 passed** in 107 s, zero
+  failures, zero skips (339 inherited + 14 new).
+- Baseline on the same clean database before the new file: 339 passed.
+- The new file alone: 14 passed.
+- `ruff check tests/test_adversarial_failure_modes.py --select F,E9,B`
+  (B008 excluded, matching the project's convention): all checks passed.
+- The zero-working-days behaviour was additionally observed through a manual
+  HTTP probe, quoted above, rather than only through the test's own
+  expectations. Its scratch employee was removed from the shared test database
+  afterwards.
+
+### Files
+
+- Created `harmonix360/backend/tests/test_adversarial_failure_modes.py`.
+- **Nothing else.** No application module, migration, schema, router, service,
+  dashboard, PDF or email file was touched on this branch — verifiable with
+  `git diff --stat cd823a1..phase-11-prefix-tests`.
