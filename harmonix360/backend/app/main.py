@@ -24,6 +24,7 @@ from app.api.v1.routers import (
     attendance,
     auth,
     contracts,
+    dashboard,
     departments,
     employees,
     payroll,
@@ -56,6 +57,7 @@ app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(time_off.router, prefix=settings.API_V1_STR)
 app.include_router(salary.router, prefix=settings.API_V1_STR)
 app.include_router(payroll.router, prefix=settings.API_V1_STR)
+app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 
 # Platform/Intelligence layer — mounted but dormant until Phases 8-10.
 # /sync registers zero entity types (app/services/sync_entities.py) and /ai has

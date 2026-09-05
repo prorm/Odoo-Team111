@@ -3,7 +3,6 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell';
 import { RequireAuth } from './routes/RequireAuth';
 import { LoginPage } from './routes/LoginPage';
-import { SectionStub } from './routes/SectionStub';
 import { ContractsPage } from './routes/contracts/ContractsPage';
 import { EmployeeDetailPage } from './routes/employees/EmployeeDetailPage';
 import { EmployeesPage } from './routes/employees/EmployeesPage';
@@ -12,15 +11,18 @@ import { AttendancePage } from './routes/attendance/AttendancePage';
 import { TimeOffPage } from './routes/time-off/TimeOffPage';
 import { PayrollPage } from './routes/payroll/PayrollPage';
 import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
+import { ReportsPage } from './routes/reports/ReportsPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
  * Time Off, Payroll, Reports.
  *
- * Every section is present and routed from Phase 0 so the navigation is real
- * rather than aspirational; each renders a stub naming the PS features it
- * covers and the phase that delivers them, and each is replaced in place as
- * that phase lands.
+ * Every section was present and routed from Phase 0 so the navigation was
+ * real rather than aspirational; each rendered a stub naming the PS features
+ * it covers and the phase that delivers them, and each was replaced in place
+ * as that phase landed. Phase 4 replaced the Payroll stub and Phase 6 the
+ * Reports one, so no stub remains here — `SectionStub` itself is kept for any
+ * section a later phase adds ahead of its implementation.
  *
  * `/` redirects to `/employees` instead of rendering a dashboard of its own.
  * PS B9's dashboard lives under Reports, and inventing a second landing page
@@ -54,7 +56,7 @@ const router = createBrowserRouter([
       { path: 'payroll/:payrunId', element: <PayrunDetailPage /> },
       {
         path: 'reports',
-        element: <SectionStub name="Reports" features="A7 Reporting Config, B9 Payroll Dashboard" phase="Phase 6" />,
+        element: <ReportsPage />,
       },
       // Anything else lands on Employees rather than a blank screen.
       { path: '*', element: <Navigate to="/employees" replace /> },
