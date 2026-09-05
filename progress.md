@@ -345,11 +345,85 @@ tracebacks) even though `uv run python -c "import ..."` resolved correctly;
 `uv run python -m pytest` / `uv run python -m alembic` sidestepped it. Worth
 re-checking if it recurs.
 
+## Phase 6 implemented (Parallel read-side: Payroll Dashboard & Analytics)
+
+Branch: `phase-6-dashboard` (pushed to `origin/phase-6-dashboard`, commit `772e9d6`).
+
+Built as a parallel read-side analytics layer (PS A7/B9) while avoiding any
+conflicts with Phase 4/5 development. Zero payroll calculation logic was
+duplicated (reads `Payslip.net_amount` directly), and no Phase 4/5 files were
+touched (verified via `git diff --stat` — only `app/main.py`, `frontend/router.tsx`,
+and `frontend/package.json` were modified; all other files are new).
+
+### Files created
+- `docs/dashboard-data-contract.md` — exact API shape, filter semantics, and
+  the definition/formula behind every KPI, chart, and alert.
+- `docs/dashboard-phase4-integration.md` — what's assumed about the
+  Payrun/Payslip schema and the one integration point (warning shape) Phase 4
+  needs to confirm.
+- `harmonix360/backend/app/schemas/dashboard.py` — Pydantic response models
+  for KPIs, charts, alerts, breakdowns, and overviews.
+- `harmonix360/backend/app/services/dashboard.py` — unified analytical query
+  service backed by real SQL across Employee, Contract, Attendance, TimeOff,
+  and Payslip tables.
+- `harmonix360/backend/app/api/v1/routers/dashboard.py` — `GET /api/v1/dashboard/`
+  gated by `PAYROLL_ROLES` (Payroll User, Payroll Manager, Admin).
+- `harmonix360/backend/tests/test_dashboard.py` — 21 comprehensive tests with
+  hand-computed exact Decimal assertions.
+- `harmonix360/frontend/src/types/dashboard.ts` — TypeScript interfaces
+  matching backend schemas.
+- `harmonix360/frontend/src/hooks/useDashboard.ts` — TanStack Query hook with
+  filter parameters.
+- `harmonix360/frontend/src/routes/reports/ReportsPage.tsx` — production-grade
+  analytics UI with Recharts visualizations, date/department filters, KPI cards,
+  alert banners, and responsive tab views.
+
+### Files modified
+- `harmonix360/backend/app/main.py` — registered dashboard router under `/api/v1`.
+- `harmonix360/frontend/src/router.tsx` — routed `/reports` to real `ReportsPage`.
+- `harmonix360/frontend/package.json` & `package-lock.json` — added `recharts`.
+
+### Dashboard metrics completed (All A–L requirements)
+1. **Total Net Salary Paid:** Sum of `net_amount` for all paid payslips in period.
+2. **Payslips Generated:** Count of payslips in period.
+3. **Average Salary:** True per-employee average net pay (unique employees, not flat line count).
+4. **Approved Time Off:** Total days and count of approved time off requests.
+5. **Attendance Health:** Derived from real `WorkingSchedule`/`ScheduleLine` data (actual hours vs expected schedule hours), never hardcoded.
+6. **Salary by Department:** Bar chart breakdown of net salary by employee department.
+7. **Monthly Trend:** 6-month historical payrun trends (gross, net, deductions).
+8. **Payroll Warnings:** Normalized and aggregated alerts across all payslips.
+9. **Contract Attention:** Contracts expiring within 30 days + active employees with no active contract.
+10. **Attendance Overview:** Real-time headcount (present, late, absent, on leave).
+11. **Time-Off Overview:** Current leave breakdown + employee allocation snapshot.
+12. **Department Breakdown:** Detailed headcounts, total wages, and leave stats.
+
+### Test & build validation
+- **Backend Tests:** 288 passed (267 pre-existing + 21 new dashboard tests) via
+  `.venv/Scripts/python.exe -m pytest -q`.
+- **Frontend Build:** `tsc -b` clean, `npm run build` succeeds (bundles Recharts cleanly).
+- **Live Endpoint Verification:** Verified against live PostgreSQL/Redis:
+  - Empty-but-honest aggregates returned on empty database.
+  - Strict RBAC: HTTP 403 Forbidden for Employee and HR Manager; HTTP 200 OK
+    for Payroll User, Payroll Manager, and Admin.
+  - Verified Vite dev server proxy serves `/reports` without console errors.
+- **UI Verification Note:** Pixel-level browser screenshots were skipped as no
+  browser-automation tool was installed in the local Windows environment.
+  Compensated with clean typecheck/build, live API checks through the Vite proxy,
+  and comprehensive test suites validating every rendered field.
+
+### Assumptions & Integration Contract for Phase 4
+- **"Paid" Definition:** Literal `PayslipStatus.PAID`.
+- **Department Grouping:** Uses employee's current department (`Employee.department_id`), not historic contract department.
+- **Contract Expiry Horizon:** 30 days.
+- **Time-Off Balances:** Snapshot of current remaining allocations (not period-filtered).
+- **Remaining Phase 4 Integration Point:** Confirm `Payslip.warnings` structure matches `_normalize_warning`'s recognized keys (`rule_code`, `message`, `severity`), as detailed in `docs/dashboard-phase4-integration.md`.
+
 ## Delivery
 
-Implementation, tests, and this handoff are committed together as the Phase 3
-change. See git log for the commit hash and origin/dev for the pushed version.
-No platform/intelligence work or palette changes are included.
+Phase 3 (`feat(phase3-backend)`) and Phase 6 (`feat(dashboard)`) are committed
+and pushed to their respective remote branches:
+- Phase 3: `origin/phase-3` (commit `5382648`)
+- Phase 6: `origin/phase-6-dashboard` (commit `772e9d6`)
 
 ## Next work
 
@@ -650,3 +724,18 @@ produce a figure), proration of a partial-period contract (currently a blocking
 warning, not an automatic calculation), a `WORKED_HOURS` seed input (a
 deliberate change to `SEED_CONTEXT_NAMES`, agreed with structure authors), and
 cancelling a payrun (`PayrunStatus.CANCELLED` exists and no path sets it).
+
+### Convergence status (was Phase 6's "Next work" list, now settled)
+
+Phase 6's handoff listed Phase 4 as future work, because `phase-6-dashboard`
+was branched from `phase-3` before Phase 4 existed. That list is superseded:
+
+1. ~~Phase 4 (Payroll Engine)~~ — **DONE**, see "Phase 4 implemented" above.
+   Note for anyone reading Phase 6's older prose: the real state machine is
+   DRAFT → COMPUTED → VALIDATED → PAID. There is no "Approved" status;
+   `PayrunStatus` has `draft/computed/validated/paid/cancelled`.
+2. **Phase 5 (PS B8):** payslip PDF + bulk email, consuming the `send_payslips`
+   enqueue boundary documented above. Still outstanding.
+3. **Integration convergence:** Phase 3, 4 and 6 are converged on `dev`; see
+   "Phase 6 integrated with Phase 4" below for what that integration actually
+   had to fix.
