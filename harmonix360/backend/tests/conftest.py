@@ -19,6 +19,7 @@ from app.models.contract import Contract
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.enums import UserRole
+from app.models.salary import SalaryRule, SalaryStructure, SalaryStructureRule
 from app.models.working_schedule import ScheduleLine, WorkingSchedule
 from app.repositories.hr import DepartmentRepository
 
@@ -147,6 +148,53 @@ async def cleanup_schedules():
                 .values(working_schedule_id=None)
             )
             await s.execute(delete(WorkingSchedule).where(WorkingSchedule.id.in_(new_ids)))
+        await s.commit()
+
+
+@pytest_asyncio.fixture
+async def cleanup_salary_config():
+    """Deletes every SalaryStructure/SalaryRule (and their link rows) created
+    during a test. Same high-water-mark strategy as `cleanup_schedules` —
+    tests create these through the API and don't always know the ids.
+
+    Defensively nulls any Contract.salary_structure_id pointing at a
+    structure being removed, regardless of whether `cleanup_employees` has
+    already run: pytest tears fixtures down in reverse setup order, and a
+    test may list these two fixtures in either order.
+    """
+    async with AsyncSessionLocal() as s:
+        rule_high_water = (
+            await s.execute(select(SalaryRule.id).order_by(SalaryRule.id.desc()).limit(1))
+        ).scalar() or 0
+        structure_high_water = (
+            await s.execute(select(SalaryStructure.id).order_by(SalaryStructure.id.desc()).limit(1))
+        ).scalar() or 0
+
+    yield
+
+    async with AsyncSessionLocal() as s:
+        new_structure_ids = (
+            await s.execute(select(SalaryStructure.id).where(SalaryStructure.id > structure_high_water))
+        ).scalars().all()
+        new_rule_ids = (
+            await s.execute(select(SalaryRule.id).where(SalaryRule.id > rule_high_water))
+        ).scalars().all()
+
+        if new_structure_ids:
+            await s.execute(
+                Contract.__table__.update()
+                .where(Contract.salary_structure_id.in_(new_structure_ids))
+                .values(salary_structure_id=None)
+            )
+            await s.execute(
+                delete(SalaryStructureRule).where(SalaryStructureRule.structure_id.in_(new_structure_ids))
+            )
+            await s.execute(delete(SalaryStructure).where(SalaryStructure.id.in_(new_structure_ids)))
+        if new_rule_ids:
+            await s.execute(
+                delete(SalaryStructureRule).where(SalaryStructureRule.salary_rule_id.in_(new_rule_ids))
+            )
+            await s.execute(delete(SalaryRule).where(SalaryRule.id.in_(new_rule_ids)))
         await s.commit()
 
 

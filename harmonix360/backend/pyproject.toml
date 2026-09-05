@@ -38,6 +38,8 @@ dependencies = [
     "cerebras-cloud-sdk>=1.0.0",
     # MCP server (Week 2)
     "fastmcp>=2.0.0",
+    # Salary rule formulas (PS A6) — restricted grammar, never eval()
+    "simpleeval>=1.0.0",
 ]
 
 [project.optional-dependencies]
