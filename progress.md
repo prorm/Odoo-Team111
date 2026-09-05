@@ -1116,3 +1116,193 @@ new warning-generation policy.
 
 This is integration and verification only. Phase 5 PDF/email rendering and
 automated historical-snapshot restoration remain unimplemented.
+
+---
+
+## 2026-09-05 — Phase 7 preparation (seed LOP scenario, partial RBAC audit, roadmap skeleton)
+
+### Starting point and protocol
+
+- Fetched `origin` and read `origin/dev:progress.md`, then diffed its claims
+  against the code on `origin/dev` before touching anything. Base commit:
+  `cd823a17799c7d651066a51053e8db3e296ff3a2` (gap-fix integration).
+- Claims checked and **all confirmed**: `LOP_AMOUNT` present in
+  `SEED_CONTEXT_NAMES`; `lop_schedule_unavailable` emitted as a blocking
+  warning; `app/seed.py` creating departments/users/salary-structure and **no**
+  Employee/Contract/Payrun/Payslip; migration `018_payroll_snapshots` adding
+  exactly the three nullable JSONB columns; suite at **339 passed**. No
+  discrepancy between progress.md and the code was found.
+- Branch `phase-7-prep`, created from that tip. No earlier phase-7-prep work
+  existed to rebase — `git branch -a --list "*phase-7*"` was empty, and
+  progress.md had never mentioned Phase 7, `ROADMAP.md`, or
+  `docs/rbac-audit-partial.md`.
+- **Stale rebase state cleared.** The OneDrive checkout still held an empty
+  `.git/rebase-merge` directory and a `REBASE_HEAD` from an earlier session
+  (both previous handoffs noted Git could not remove them). The lock had since
+  released; both were removed, and this checkout is usable again. No commits,
+  branches or worktrees were affected — the directory was empty.
+
+### 1. Demo seed — Loss-of-Pay scenario
+
+`_seed_lop_scenario` in `app/seed.py` creates the INPUTS for a payrun that
+exercises Gap-fix's `LOP_AMOUNT` rule end to end:
+
+| Input | Value | Why this value |
+|---|---|---|
+| Employee | `lop.demo@peoplepay360.com` (Lakshmi Prasad, Engineering) | — |
+| `bank_account` | `IN00PP360DEMO0001` | Without it every payslip carries a blocking `missing_bank_details` warning and the demo run can never be validated |
+| Working schedule | Mon–Fri 09:00–17:00, 60 min break (35 h/week) | Without a schedule `LOP_AMOUNT` is OMITTED and a blocking `lop_schedule_unavailable` fires |
+| Contract | 30,000.00, active, from 2026-01-01, open-ended | Open-ended so no `contract_gap` warning |
+| Leave type | `PP360_UNPAID`, `payroll_integration=True`, `requires_allocation=False` | The flag is what makes an approved absence reach `UNPAID_LEAVE_DAYS` at all |
+| Approved absence | 2026-08-12 .. 2026-08-14 (3 days) | All three are scheduled workdays |
+| Attendance | 18 days, 09:00–16:00 | Exactly the 7 NET scheduled hours, so status derives as PRESENT not OVERTIME; every day checked out, so no `missing_checkout` |
+
+**Verified by actually computing it**, through the real API on the seeded
+database (payrun created, computed, then soft-deleted to leave the database as
+found):
+
+```
+PP360_BASIC  basic       30000.00
+PP360_HRA    allowance   12000.00      (40% of Basic)
+PP360_GROSS  gross       42000.00
+PP360_PT     deduction     200.00
+PP360_LOP    deduction    4285.71      (30000 / 21 scheduled days) * 3
+PP360_NET    net         37514.29
+worked_days 18.00   warnings []   blocking {}
+```
+
+Those are deliberately the same figures as the gap-fix phase's hand-computed
+golden test, so the number on the demo screen and the number pinned in the
+suite are the same arithmetic. **Zero warnings, blocking or advisory** — the
+scenario can be computed → validated → marked paid without a firewall stop,
+which is the point of a demo dataset.
+
+**Idempotency proven by running the seed twice**: second run reports
+`nothing (already seeded)`, and row counts are unchanged
+(1 employee / 1 contract / 1 schedule / 1 leave type / 1 request / 18
+attendance rows). This matters more than usual here: two overlapping active
+contracts are refused by `contracts_active_period_overlap_excl`, so a
+non-idempotent seed would not merely duplicate rows — its second run would
+crash.
+
+**The seed still creates no Payrun, Payslip or PayslipLine, deliberately.** A
+payslip written by anything other than the compute engine has no
+`reference_snapshot`, and migration 018 makes exactly those rows return 409
+`historical_snapshot_unavailable` on every read. The seed lays out inputs; a
+human presses Compute.
+
+**MARKED TODO, NOT FAKED — "a paid payrun with a generated PDF payslip"**
+remains unseeded, in the module docstring and in the seed's own log output. It
+cannot be seeded: there is no PDF renderer in this tree, and a placeholder file
+or a `pdf_url` pointing at nothing would make a missing feature look present.
+When `origin/phase-5-payslip-pdf-email` lands, extend `_seed_lop_scenario` to
+compute → validate → mark paid → send through the real endpoints.
+
+No arithmetic was reimplemented: the seed calls `WorkingScheduleService`
+(server-computed `weekly_hours`), `request_duration` (Phase 2's leave
+duration), `worked_hours` and `derive_attendance_status` (Phase 2's pure status
+policy, with the contract's schedule override).
+
+### 2. `docs/rbac-audit-partial.md` — created, not extended
+
+The task said "extend"; the file **did not exist** on `origin/dev` and
+progress.md had never claimed one. It is created here, covering what has
+actually been verified.
+
+Every cell is an **observed HTTP status code** from a real in-process API call
+per role (token minted with `create_access_token`, the same helper
+`tests/conftest.py` uses), not a reading of the source. All GETs, so the audit
+changes nothing it measures.
+
+| Route | employee | hr_manager | payroll_user | payroll_manager | admin |
+|---|---|---|---|---|---|
+| `GET /dashboard/summary` (default period) | 403 | 403 | 200 | 200 | 200 |
+| `GET /dashboard/summary` (explicit period) | 403 | 403 | 200 | 200 | 200 |
+| `GET /dashboard/summary` (+employee_type filter) | 403 | 403 | 200 | 200 | 200 |
+| `GET /payruns/` | 403 | 403 | 200 | 200 | 200 |
+| `GET /payslips/` | 403 | 403 | 200 | 200 | 200 |
+| `GET /salary-structures/` | 403 | 403 | 200 | 200 | 200 |
+
+All match Architecture §5. Three findings are recorded in the document rather
+than smoothed over:
+
+1. **§5's matrix has no explicit Dashboard/Reports row.** The dashboard is a
+   READ over Payruns/Payslips, which is the row that governs it and why
+   `PAYROLL_ROLES` is the correct gate — HR Manager and Employee get no access,
+   not even read.
+2. **Unauthenticated `GET /dashboard/summary` returns 200, not 401**, because
+   `get_current_user` falls back to the demo admin when `ENVIRONMENT` is not
+   `production`. Bounded and deliberate, but anyone deploying must set
+   `ENVIRONMENT=production`. Verifying the production branch actually 401s is a
+   deployment-config test, not covered.
+3. **`POST /payruns/{id}/send-payslips` was not probed** — it has side effects
+   (it publishes to the broker) and this audit is read-only. Its gate is
+   covered by `tests/test_payroll_api.py`.
+
+**PENDING PHASE 5 rows**, listed with no status codes because none have been
+observed: payslip PDF print/download, bulk payrun print, the `send_payslips`
+worker, and employee self-service payslip access (deliberately absent per PRD
+§3 — if Phase 5 adds an endpoint, that is a scope change needing its own §5
+row). The document also states plainly what it does NOT cover: write verbs,
+row-level "own records only" scoping, and MCP/offline-sync entry points.
+
+### 3. `ROADMAP.md` — skeleton only
+
+Structure and section headers, with a header banner saying in as many words
+that it must not be read as status. Sections whose phases do not exist carry
+`<!-- TO BE FILLED -->` rather than prose, because filling them in early is
+precisely how a roadmap starts claiming features nobody built. Phase 5 is
+marked **IN FLIGHT** (branch exists, not integrated); Phases 7–10 **NOT
+STARTED**. It carries the Phase 4 → Phase 5 handoff contract (task name and
+payload) and the two constraints Phase 5 must not violate (render from the
+snapshot, surface the legacy 409). Cross-cutting invariants are listed once.
+
+### One test changed, and why it is not a product change
+
+`test_attendance_health_is_schedule_derived_not_hardcoded` asserted
+`expected_working_days == 15` against the **org-wide, unfiltered** aggregate.
+Adding an active employee with a working schedule to the seed made it 20. The
+dashboard is right — it counted the employee because the employee exists; the
+assertion was coupled to a database containing nothing but its own fixture.
+
+Scoped to the fixture's own department, exactly as the three sibling tests were
+in the Phase 4/6 integration for the identical reason. Within Engineering:
+alice 5/3, bob 5/5, dave/erin/frank 0/0 → **8 of 10 = 80.00%**, the same
+percentage as before. No dashboard, payroll, PDF or email file was touched.
+
+### Files created or modified
+
+- Modified `harmonix360/backend/app/seed.py`: the LOP scenario, its constants,
+  the Phase 5 TODO, and log output naming the employee and the expected
+  figures.
+- Created `docs/rbac-audit-partial.md` and `ROADMAP.md`.
+- Modified `harmonix360/backend/tests/test_dashboard.py`: one test scoped by
+  department (above).
+- **Not touched:** any dashboard service/schema/router file, any payroll
+  computation file, any PDF or email file. Nothing was merged into `dev`.
+
+### Validation record
+
+- Full suite on the isolated, migrated (018) and seeded database
+  `peoplepay360_gap_tests`: **339 passed**, zero failures, zero skips.
+- Baseline on the same database before any change: **339 passed** — identical,
+  so this branch adds no tests and breaks none.
+- On the shared development database `peoplepay360` the suite is **337 passed,
+  2 failed**; both failures are the documented pre-existing legacy-payslip
+  409s (`test_domain_skeleton.py` payslip-list rows), caused by 18
+  snapshot-less payslips retained from earlier manual verification. Unchanged
+  by this branch and already recorded in the gap-fix handoff.
+- Seed run twice against the test database: idempotent, verified by row counts.
+- Scenario computed through the real API and matched the documented figures
+  exactly; the verification payrun was soft-deleted afterwards.
+- `ruff check app/seed.py --select F,E9`: all checks passed.
+
+### Explicitly still pending Phase 5
+
+1. A paid payrun with a generated PDF payslip in the demo seed.
+2. Print / download payslip PDF, and bulk payrun print — RBAC rows unverified
+   because the routes do not exist.
+3. The `send_payslips` worker; the enqueue boundary exists and nothing consumes
+   it.
+4. Whether employees ever get self-service payslip access. Currently and
+   deliberately: no.
