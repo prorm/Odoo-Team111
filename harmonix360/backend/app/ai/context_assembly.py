@@ -248,9 +248,18 @@ async def propose(*, action: str, params: dict, question: str, actor_email: str)
         rationale = decision.rationale
         if decision.status == "ai_unavailable":
             rationale = (
-                "No AI provider was available to write a rationale. The proposal below is "
-                "the request exactly as asked, with the authoritative balance and existing "
-                "leave shown alongside it. Review those figures directly before confirming."
+                (
+                    "The AI assistant is temporarily unavailable — the request volume limit "
+                    "was reached. The proposal below is the request exactly as asked, with the "
+                    "authoritative balance and existing leave shown alongside it. Try asking "
+                    "again shortly, or review the figures directly and confirm now."
+                )
+                if decision.reason == "rate_limited"
+                else (
+                    "No AI provider was available to write a rationale. The proposal below is "
+                    "the request exactly as asked, with the authoritative balance and existing "
+                    "leave shown alongside it. Review those figures directly before confirming."
+                )
             )
 
         record = await proposals.create(
@@ -272,6 +281,7 @@ async def propose(*, action: str, params: dict, question: str, actor_email: str)
             "proposal": record,
             "ai_decision": decision.decision,
             "ai_status": decision.status,
+            "ai_reason": decision.reason,
             "facts": context.facts,
             "unavailable_information": context.unavailable,
             "fact_sources": context.sources,

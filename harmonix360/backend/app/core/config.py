@@ -68,22 +68,22 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # AI Providers
+    # AI Provider — Groq only. Cerebras was removed 2026-09-06: the account
+    # authenticates but every completion returns 402 Payment Required (unfunded
+    # account, not a transient outage), so it was never a working fallback —
+    # just a second failure mode. See app/ai/provider_router.py's module
+    # docstring and app/api/v1/routers/ai.py's single-flight guard, which
+    # exists because Groq alone has an 8000 TPM ceiling with no fallback.
     GROQ_API_KEY: str = Field(default="", validation_alias="GROQ_API_KEY")
-    CEREBRAS_API_KEY: str = Field(default="", validation_alias="CEREBRAS_API_KEY")
-    # Both providers retired the Llama 3.1 8B ids these defaults used to name
-    # (`llama-3.1-8b-instant` on Groq, `llama3.1-8b` on Cerebras). A retired id
-    # is a 404 `model_not_found`, and because that is a provider error the
-    # router treats it as a dead provider and falls through the whole chain —
-    # so every AI answer degraded to "unavailable" while the keys were valid.
-    # Verified against each provider's live /v1/models before being changed.
+    # Groq retired the Llama 3.1 8B id this default used to name
+    # (`llama-3.1-8b-instant`). A retired id is a 404 `model_not_found`, and
+    # because that is a provider error the router treats it as a dead
+    # provider — so every AI answer degraded to "unavailable" while the key
+    # was valid. Verified against Groq's live /v1/models before being changed.
     GROQ_MODEL: str = Field(default="openai/gpt-oss-120b", validation_alias="GROQ_MODEL")
-    CEREBRAS_MODEL: str = Field(default="gpt-oss-120b", validation_alias="CEREBRAS_MODEL")
     AI_CACHE_DEFAULT_TTL: int = Field(default=600, validation_alias="AI_CACHE_DEFAULT_TTL")
     AI_PROVIDER_TIMEOUT: int = Field(default=30, validation_alias="AI_PROVIDER_TIMEOUT")
-    # Rate limits (requests per minute per provider)
     GROQ_RPM: int = Field(default=30, validation_alias="GROQ_RPM")
-    CEREBRAS_RPM: int = Field(default=30, validation_alias="CEREBRAS_RPM")
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(default="http://signoz-otel-collector:4318", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")

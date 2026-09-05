@@ -663,10 +663,7 @@ async def test_provider_failure_returns_clean_unavailable_with_facts_intact(
         raise RuntimeError("provider exploded")
 
     monkeypatch.setattr(provider_router.settings, "GROQ_API_KEY", "k", raising=False)
-    monkeypatch.setattr(provider_router.settings, "CEREBRAS_API_KEY", "k", raising=False)
-    monkeypatch.setattr(
-        provider_router, "_CALL_FUNCTIONS", {"groq": always_fails, "cerebras": always_fails}
-    )
+    monkeypatch.setattr(provider_router, "_CALL_FUNCTIONS", {"groq": always_fails})
     monkeypatch.setattr(ai_cache.AIResponseCache, "get", staticmethod(lambda *a, **k: _none()))
     monkeypatch.setattr(ai_cache.AIResponseCache, "set", staticmethod(lambda *a, **k: _noop()))
 
@@ -693,12 +690,80 @@ async def test_no_configured_provider_is_unavailable_not_an_exception(monkeypatc
     from app.ai import provider_router
 
     monkeypatch.setattr(provider_router.settings, "GROQ_API_KEY", "", raising=False)
-    monkeypatch.setattr(provider_router.settings, "CEREBRAS_API_KEY", "", raising=False)
     monkeypatch.setattr(ai_cache.AIResponseCache, "get", staticmethod(lambda *a, **k: _none()))
 
     with pytest.raises(provider_router.AIUnavailableError) as raised:
         await provider_router.generate(prompt="x", context={}, task_type="general")
     assert "no API key configured" in str(raised.value)
+    assert raised.value.reason == "not_configured"
+
+
+async def test_rate_limited_provider_is_reported_as_rate_limited_not_a_generic_failure(
+    monkeypatch,
+):
+    """A 429 from the provider (or our own per-minute cap) must be tagged
+    `reason="rate_limited"` — that is what lets the UI say "try again shortly"
+    instead of a generic "AI unavailable", which is the whole point of
+    distinguishing the two (a missing key never fixes itself; a rate limit
+    does). Groq is the only provider now, so this failure mode is no longer
+    masked by falling through to a second provider.
+    """
+    from app.ai import cache as ai_cache
+    from app.ai import provider_router
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    async def always_429(prompt, model, api_key):
+        raise FakeRateLimitError("rate limit reached")
+
+    monkeypatch.setattr(provider_router.settings, "GROQ_API_KEY", "k", raising=False)
+    monkeypatch.setattr(provider_router, "_CALL_FUNCTIONS", {"groq": always_429})
+    monkeypatch.setattr(ai_cache.AIResponseCache, "get", staticmethod(lambda *a, **k: _none()))
+    monkeypatch.setattr(ai_cache.AIResponseCache, "set", staticmethod(lambda *a, **k: _noop()))
+
+    with pytest.raises(provider_router.AIUnavailableError) as raised:
+        await provider_router.generate(prompt="x", context={}, task_type="general")
+    assert raised.value.reason == "rate_limited"
+
+
+async def test_run_hr_insight_gives_an_honest_message_per_unavailable_reason(
+    monkeypatch, seeded_payslip
+):
+    """The job result's `error` text must never be a raw provider exception —
+    it is always one of the canned, honest messages keyed by `reason`, and
+    `reason` itself travels on the result so the UI can pick a distinct state
+    (see AssistantPage.tsx's `unavailableHeading`)."""
+    from app.ai import cache as ai_cache
+    from app.ai import provider_router
+    from app.jobs.tasks.ai_jobs import run_hr_insight
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    async def always_429(prompt, model, api_key):
+        raise FakeRateLimitError("rate limit reached")
+
+    monkeypatch.setattr(provider_router.settings, "GROQ_API_KEY", "k", raising=False)
+    monkeypatch.setattr(provider_router, "_CALL_FUNCTIONS", {"groq": always_429})
+    monkeypatch.setattr(ai_cache.AIResponseCache, "get", staticmethod(lambda *a, **k: _none()))
+    monkeypatch.setattr(ai_cache.AIResponseCache, "set", staticmethod(lambda *a, **k: _noop()))
+
+    outcome = await run_hr_insight(
+        task_type="payslip_explanation",
+        question="Why did this change?",
+        actor_email=PAYROLL_MANAGER_EMAIL,
+        params={"payslip_id": seeded_payslip["payslip_id"]},
+    )
+
+    assert outcome["status"] == "ai_unavailable"
+    assert outcome["reason"] == "rate_limited"
+    assert "try again" in outcome["error"].lower()
+    assert "rate limit reached" not in outcome["error"]  # never the raw exception text
+    # The facts are still the useful half, unaffected by which provider failed.
+    assert outcome["result"]["facts"]["current_payslip"]["totals"]["net_amount"] == str(
+        seeded_payslip["net"]
+    )
 
 
 async def test_narration_prompt_carries_authoritative_facts_and_the_ban_on_recalculating(
@@ -772,6 +837,56 @@ async def test_task_level_rbac_holds_even_if_a_job_is_enqueued_directly(seeded_p
 # ===========================================================================
 # 6. Propose -> human confirm -> execute (Architecture §8.1/§11)
 # ===========================================================================
+
+
+async def test_proposal_rationale_is_honest_about_a_rate_limited_provider(
+    leave_scenario, monkeypatch
+):
+    """When the provider is rate-limited rather than merely unconfigured, the
+    proposal's rationale must say so — "temporarily unavailable ... try
+    again shortly" — not the permanent-sounding "no AI provider was
+    available". `ai_reason` travels alongside for the UI badge
+    (AssistantPage.tsx's "AI busy" pill). The proposal is still created and
+    still requires human confirmation either way — a narration failure is
+    never a reason to block the underlying request.
+    """
+    from app.ai import cache as ai_cache
+    from app.ai import provider_router
+    from app.jobs.tasks.ai_jobs import run_ai_action_proposal
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    async def always_429(prompt, model, api_key):
+        raise FakeRateLimitError("rate limit reached")
+
+    monkeypatch.setattr(provider_router.settings, "GROQ_API_KEY", "k", raising=False)
+    monkeypatch.setattr(provider_router, "_CALL_FUNCTIONS", {"groq": always_429})
+    monkeypatch.setattr(ai_cache.AIResponseCache, "get", staticmethod(lambda *a, **k: _none()))
+    monkeypatch.setattr(ai_cache.AIResponseCache, "set", staticmethod(lambda *a, **k: _noop()))
+
+    employee = leave_scenario["employee"]
+    outcome = await run_ai_action_proposal(
+        action="create_time_off_request",
+        params={
+            "employee_id": employee["id"],
+            "time_off_type_id": leave_scenario["leave_type"]["id"],
+            "date_from": "2026-09-11",
+            "date_to": "2026-09-11",
+            "reason": "Proposed by AI",
+        },
+        question="Request one day of casual leave next Friday.",
+        actor_email=EMPLOYEE_EMAIL,
+    )
+
+    assert outcome["status"] == "completed"
+    result = outcome["result"]
+    assert result["ai_status"] == "ai_unavailable"
+    assert result["ai_reason"] == "rate_limited"
+    assert result["requires_human_confirmation"] is True
+    rationale = result["proposal"]["rationale"].lower()
+    assert "temporarily unavailable" in rationale
+    assert "rate limit reached" not in rationale  # never the raw exception text
 
 
 async def test_proposal_does_not_mutate_until_a_human_confirms(

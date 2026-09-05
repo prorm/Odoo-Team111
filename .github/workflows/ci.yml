@@ -156,9 +156,13 @@ jobs:
           docker compose --profile advanced up --build -d
           timeout 180 sh -c 'until curl -sf http://localhost:8000/health; do sleep 3; done'
           docker compose --profile advanced ps
-          # The MCP server answers on its own port (400 is the correct reply to
-          # a bare GET on a Streamable HTTP endpoint — it means it is listening
-          # and speaking MCP, not that it is broken).
+          # The MCP server answers on its own port (406 is the correct reply
+          # from FastMCP 3.4.6 to a bare GET on a Streamable HTTP endpoint —
+          # it means it is listening and speaking MCP, not that it is broken.
+          # `curl -o /dev/null` without `-f` doesn't care which non-zero
+          # status it gets, so this loop passes on 406 same as it would on
+          # any other reply; verified live 2026-09-06 against a from-scratch
+          # `--profile advanced` build).
           timeout 60 sh -c 'until curl -s -o /dev/null http://localhost:8100/mcp; do sleep 3; done'
 
       - name: Show logs on failure

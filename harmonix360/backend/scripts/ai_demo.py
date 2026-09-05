@@ -21,9 +21,10 @@ and computed here, by the same endpoints B5/B6 expose.
 
 WHEN NO AI PROVIDER IS CONFIGURED
 ---------------------------------
-`GROQ_API_KEY`/`CEREBRAS_API_KEY` are empty in a fresh checkout. The demo still
-runs end to end and reports `ai_unavailable` at the narration step, printing the
-authoritative facts that would have been narrated. That is the designed
+`GROQ_API_KEY` is empty in a fresh checkout, and Groq is the only provider —
+there is no fallback. The demo still runs end to end and reports
+`ai_unavailable` at the narration step, printing the authoritative facts that
+would have been narrated. That is the designed
 behaviour, not a broken demo: the deterministic half is the product, and the
 model is a presentation layer over it. The script says so explicitly rather than
 quietly printing an empty answer.

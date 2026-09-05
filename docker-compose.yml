@@ -2,8 +2,8 @@
 #
 #   docker compose up --build
 #       The CORE profile: postgres, redis, backend, worker, frontend, mailhog.
-#       Everything PS §4 requires. Needs no Groq/Cerebras key, no MCP process
-#       and no SigNoz. This is what Phases 1-7 develop and demo against.
+#       Everything PS §4 requires. Needs no Groq key, no MCP process and no
+#       SigNoz. This is what Phases 1-7 develop and demo against.
 #
 #   docker compose --profile advanced up --build
 #       The above PLUS the Platform/Intelligence layer: mcp-server and the
@@ -36,13 +36,14 @@ x-backend-env: &backend-env
   JWT_SECRET: ${JWT_SECRET:-peoplepay360-dev-jwt-secret-change-in-production}
   HASHID_SALT: ${HASHID_SALT:-harmonix360-secret-salt-change-in-prod}
   ENVIRONMENT: ${ENVIRONMENT:-development}
-  # Optional; absent in the core profile by design.
+  # Optional; absent in the core profile by design. Groq is the sole AI
+  # provider — Cerebras was removed 2026-09-06 (unfunded account, 402 on
+  # every completion; never a working fallback). See
+  # app/ai/provider_router.py's module docstring.
   GROQ_API_KEY: ${GROQ_API_KEY:-}
-  CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
   # Passed through so a retired model id can be corrected without a rebuild.
   # Empty means "use the default in app/core/config.py".
   GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
-  CEREBRAS_MODEL: ${CEREBRAS_MODEL:-gpt-oss-120b}
   SENTRY_DSN: ${SENTRY_DSN:-}
   MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-peoplepay360-mcp-dev-key}
   # Off unless the advanced profile brings a collector up. With no collector

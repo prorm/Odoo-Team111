@@ -58,12 +58,22 @@ export interface AiInsight {
  *   ai_unavailable  — no provider answered; the FACTS ARE STILL PRESENT and
  *                     must still be shown, with a banner instead of an error
  *   failed          — the request itself was rejected (403, bad params)
+ *
+ * `reason` is only set when status is `ai_unavailable`, and only exists to
+ * pick the right banner: `rate_limited` is transient (Groq's TPM ceiling —
+ * there is no second provider to fall back to, see
+ * app/ai/provider_router.py), `not_configured` means nobody has set a key,
+ * and anything else is a provider failure. Never shown verbatim — always
+ * routed through a canned, honest sentence.
  */
+export type AiUnavailableReason = 'rate_limited' | 'not_configured' | 'provider_error' | string;
+
 export interface AiJobStatus {
   job_id: string;
   status: 'pending' | 'completed' | 'failed' | 'ai_unavailable' | string;
   result: AiInsight | null;
   error: string | null;
+  reason?: AiUnavailableReason | null;
 }
 
 export interface AiProposal {
@@ -84,6 +94,8 @@ export interface AiProposalResult {
   proposal: AiProposal;
   ai_decision: string;
   ai_status: string;
+  /** Set only when ai_status is "ai_unavailable" — see AiUnavailableReason. */
+  ai_reason?: AiUnavailableReason | null;
   facts: Record<string, unknown>;
   unavailable_information: string[];
   fact_sources: string[];

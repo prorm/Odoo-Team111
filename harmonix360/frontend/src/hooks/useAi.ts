@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { fetchApi } from '@/lib/api-client';
@@ -10,6 +10,7 @@ import type {
   AiProposalJobStatus,
   AiProposalOutcome,
   AiProposalResult,
+  AiUnavailableReason,
 } from '@/types/ai';
 
 /**
@@ -30,16 +31,56 @@ import type {
 const POLL_INTERVAL_MS = 800;
 const MAX_POLLS = 75; // ~60 seconds, comfortably past the provider timeout.
 
-export type AiPhase = 'idle' | 'thinking' | 'done' | 'unavailable' | 'error' | 'timeout';
+export type AiPhase = 'idle' | 'thinking' | 'done' | 'unavailable' | 'error' | 'timeout' | 'blocked';
+
+/**
+ * ONE in-flight AI completion per browser tab, shared across both the Ask
+ * panel and the Proposal panel.
+ *
+ * Groq is the sole provider now (Cerebras was removed 2026-09-06 — see
+ * app/ai/provider_router.py) with an 8000 TPM ceiling and no fallback. The
+ * two panels on the assistant page each own an independent hook instance, so
+ * without this a person could fire a question AND a leave-request proposal
+ * at the same time and burn the same per-minute budget twice for no reason.
+ * A plain module boolean is enough — this is per-tab UI throttling, not
+ * cross-tab or cross-user coordination, and `useSyncExternalStore` is what
+ * lets two unrelated components re-render off the one shared flag.
+ */
+let aiRequestInFlight = false;
+const inFlightListeners = new Set<() => void>();
+
+function subscribeInFlight(listener: () => void): () => void {
+  inFlightListeners.add(listener);
+  return () => inFlightListeners.delete(listener);
+}
+
+function getInFlightSnapshot(): boolean {
+  return aiRequestInFlight;
+}
+
+function setInFlight(value: boolean): void {
+  if (aiRequestInFlight === value) return;
+  aiRequestInFlight = value;
+  inFlightListeners.forEach((listener) => listener());
+}
+
+const SESSION_BUSY_NOTICE =
+  'Another AI request is already in progress in this session. Wait for it to finish, then try again.';
+
+function useAiSessionBusy(): boolean {
+  return useSyncExternalStore(subscribeInFlight, getInFlightSnapshot);
+}
 
 interface AskState {
   phase: AiPhase;
   insight: AiInsight | null;
   /** Present when the job finished without an answer — shown as a banner. */
   notice: string | null;
+  /** Set only when phase is 'unavailable' — see AiUnavailableReason. */
+  reason: AiUnavailableReason | null;
 }
 
-const IDLE: AskState = { phase: 'idle', insight: null, notice: null };
+const IDLE: AskState = { phase: 'idle', insight: null, notice: null, reason: null };
 
 function useCancellablePoll() {
   const timer = useRef<number | null>(null);
@@ -68,12 +109,21 @@ function useCancellablePoll() {
 export function useAiAsk() {
   const [state, setState] = useState<AskState>(IDLE);
   const { wait, isCancelled } = useCancellablePoll();
+  const sessionBusy = useAiSessionBusy();
 
   const reset = useCallback(() => setState(IDLE), []);
 
   const ask = useCallback(
     async (request: AiAskRequest) => {
-      setState({ phase: 'thinking', insight: null, notice: null });
+      // Checked and set synchronously, before the first `await` — nothing else
+      // in this single-threaded tick can slip in between the check and the
+      // claim, so this never races a second call started a moment later.
+      if (aiRequestInFlight) {
+        setState({ phase: 'blocked', insight: null, notice: SESSION_BUSY_NOTICE, reason: null });
+        return;
+      }
+      setInFlight(true);
+      setState({ phase: 'thinking', insight: null, notice: null, reason: null });
       try {
         const handle = await fetchApi<AiJobHandle>('/ai/ask', {
           method: 'POST',
@@ -89,7 +139,7 @@ export function useAiAsk() {
           if (job.status === 'pending') continue;
 
           if (job.status === 'completed') {
-            setState({ phase: 'done', insight: job.result, notice: null });
+            setState({ phase: 'done', insight: job.result, notice: null, reason: null });
             return;
           }
           if (job.status === 'ai_unavailable') {
@@ -100,6 +150,7 @@ export function useAiAsk() {
               notice:
                 job.error ??
                 'No AI provider is available right now. The authoritative payroll data below is unaffected.',
+              reason: job.reason ?? null,
             });
             return;
           }
@@ -107,6 +158,7 @@ export function useAiAsk() {
             phase: 'error',
             insight: null,
             notice: job.error ?? 'The assistant could not answer this question.',
+            reason: null,
           });
           return;
         }
@@ -116,19 +168,23 @@ export function useAiAsk() {
           insight: null,
           notice:
             'The assistant did not answer in time. The background worker may not be running — payroll itself is unaffected.',
+          reason: null,
         });
       } catch (error) {
         setState({
           phase: 'error',
           insight: null,
           notice: error instanceof Error ? error.message : String(error),
+          reason: null,
         });
+      } finally {
+        setInFlight(false);
       }
     },
     [wait, isCancelled],
   );
 
-  return { ...state, ask, reset };
+  return { ...state, ask, reset, sessionBusy };
 }
 
 interface ProposalState {
@@ -136,6 +192,8 @@ interface ProposalState {
   proposal: AiProposalResult | null;
   outcome: AiProposalOutcome | null;
   notice: string | null;
+  /** Set only when phase is 'unavailable' — see AiUnavailableReason. */
+  reason: AiUnavailableReason | null;
 }
 
 const PROPOSAL_IDLE: ProposalState = {
@@ -143,6 +201,7 @@ const PROPOSAL_IDLE: ProposalState = {
   proposal: null,
   outcome: null,
   notice: null,
+  reason: null,
 };
 
 /**
@@ -157,11 +216,17 @@ export function useAiProposal() {
   const [state, setState] = useState<ProposalState>(PROPOSAL_IDLE);
   const { wait, isCancelled } = useCancellablePoll();
   const queryClient = useQueryClient();
+  const sessionBusy = useAiSessionBusy();
 
   const reset = useCallback(() => setState(PROPOSAL_IDLE), []);
 
   const propose = useCallback(
     async (body: { action: string; question: string; params: Record<string, string> }) => {
+      if (aiRequestInFlight) {
+        setState({ ...PROPOSAL_IDLE, phase: 'blocked', notice: SESSION_BUSY_NOTICE });
+        return;
+      }
+      setInFlight(true);
       setState({ ...PROPOSAL_IDLE, phase: 'thinking' });
       try {
         const handle = await fetchApi<AiJobHandle>('/ai/proposals', {
@@ -177,7 +242,13 @@ export function useAiProposal() {
           const job = await fetchApi<AiProposalJobStatus>(`/ai/jobs/${handle.job_id}`);
           if (job.status === 'pending') continue;
           if (job.status === 'completed' && job.result) {
-            setState({ phase: 'done', proposal: job.result, outcome: null, notice: null });
+            setState({
+              phase: 'done',
+              proposal: job.result,
+              outcome: null,
+              notice: null,
+              reason: job.result.ai_reason ?? null,
+            });
             return;
           }
           setState({
@@ -198,6 +269,8 @@ export function useAiProposal() {
           phase: 'error',
           notice: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        setInFlight(false);
       }
     },
     [wait, isCancelled],
@@ -224,5 +297,5 @@ export function useAiProposal() {
     },
   });
 
-  return { ...state, propose, confirm, reject, reset };
+  return { ...state, propose, confirm, reject, reset, sessionBusy };
 }

@@ -2908,3 +2908,187 @@ Two things follow, and both matter for the demo:
 `scripts/ai_demo.py` creates an August payrun and a time-off request in the
 `peoplepay360` demo database by design. It was run twice here, so that database
 has moved further from pristine — the reset advice above still stands.
+
+---
+
+## 2026-09-06 — Cerebras removed outright; demo-hardening closes the two live risks
+
+Branch `verify/advanced-profile-and-ai-keys` merged into `main` (fast-forward,
+51107c0). This session's decision, made explicitly rather than discovered:
+**drop Cerebras entirely.** It authenticated but every completion returned
+402 Payment Required — an unfunded account, not a transient outage. It was
+never a working fallback in this environment; it was a second failure mode
+dressed up as resilience. Groq is now the sole AI provider.
+
+### Cerebras removal — verified gone, not just unused
+
+Every reference removed from the paths that matter:
+
+- `app/ai/provider_router.py` — `_call_cerebras`, the Cerebras entry in
+  `_PROVIDERS` and `_CALL_FUNCTIONS`, the module docstring. A new section,
+  "CEREBRAS WAS REMOVED, NOT DISABLED", states why and warns against
+  silently re-adding it without funding the account.
+- `app/core/config.py` — `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_RPM`
+  gone from `Settings`.
+- `docker-compose.yml`, `.env.example`, `README.md` — no `CEREBRAS_*` env var
+  anywhere; the advanced-profile paragraph now states Groq's TPM ceiling and
+  points at the single-flight guard this forced.
+- `pyproject.toml` — dependency line removed; `uv lock` regenerated (155
+  packages, down from 159 — `cerebras-cloud-sdk` and its three HTTP/2
+  transitive deps: `h2`, `hpack`, `hyperframe`); `requirements.txt` and
+  `requirements-dev.txt` regenerated with the exact `uv export` commands
+  their own header comments record, so they stay in the state `uv sync`
+  would produce.
+- `tests/test_ai_mcp.py` — the two tests that monkeypatched
+  `CEREBRAS_API_KEY` and a `"cerebras"` stub function now name Groq only;
+  neither test was Cerebras-*specific* (both exercise "every provider
+  failed" / "no provider configured", which are still fully meaningful with
+  one provider), so nothing was deleted, only edited.
+- `scripts/ai_demo.py` — the "no provider configured" docstring note.
+
+Deliberately **not** touched: `01_PRD.md`, `02_SYSTEM_ARCHITECTURE.md`,
+`HARMONIX360_ARCHITECTURE.md`, and `docs/harmonix360-base-reference.md`
+(explicitly archived by an earlier commit). These are the original spec/brief
+— a historical record of what was asked for, not living documentation of
+current behaviour. Rewriting them to erase "Cerebras fallback" would falsify
+the record of what this session actually changed and why.
+
+`grep -rniI cerebras` across every `.py .yml .md .example .toml .txt .lock`
+file, excluding `.venv` and `.git`, now returns only: the removal
+announcements themselves (config.py, provider_router.py, docker-compose.yml,
+.env.example, pyproject.toml) and the untouched historical docs above.
+
+### The two live risks from the previous entry, closed
+
+**1. Raw provider exceptions never reached a UI.** They didn't before this
+session either -- `run_hr_insight` and `context_assembly.propose()` already
+substituted a canned message on `AIUnavailableError` rather than forwarding
+`str(exc)`. What was missing was *which* canned message: every failure read
+"AI unavailable" whether the cause was a missing key (permanent, until an
+admin acts) or a rate limit (transient, retrying helps). `AIUnavailableError`
+now carries a `reason` -- `not_configured | rate_limited | provider_error` --
+classified in `provider_router.generate()` by checking each failure's
+`status_code` (Groq's SDK sets 429 the same way most OpenAI-compatible
+clients do) alongside the existing internal `ProviderRateLimiter` trip.
+`reason` travels through `ai_jobs.py`'s job result, `AIJobStatusResponse`,
+and `AIDecision`/`context_assembly.propose()`'s rationale override, into the
+frontend's `AiJobStatus.reason` / `AiProposalResult.ai_reason`.
+
+Verified live, not mocked: fired 6 concurrent `/ai/ask` calls against the
+real Groq key. 4 completed; 2 came back `ai_unavailable` /
+`reason: "rate_limited"` with the message "The AI assistant is temporarily
+unavailable -- the request volume limit was reached. Try again in a minute
+or two." -- the actual 429 text from Groq (`Rate limit reached for model
+openai/gpt-oss-120b ... tokens per minute (TPM): Limit 8000`) never reached
+the response; only the classified reason did. In the same run, `/health`,
+`/employees/`, `/payruns/`, `/dashboard/summary` and `/payslips/{id}` all
+returned 200 while the AI subsystem was actively rate-limited -- the
+independence Architecture Section 5.1 claims, checked against a real 429
+rather than asserted from the code's shape.
+
+**2. One in-flight AI completion per browser tab.** The Ask panel and the
+Proposal panel on `AssistantPage.tsx` each own an independent hook instance
+(`useAiAsk` / `useAiProposal`), so nothing previously stopped a person firing
+a question and a leave-request proposal at once and spending the same
+8000 TPM budget twice for no reason -- a real risk now that there is no
+second provider to absorb it. `hooks/useAi.ts` adds a module-level shared
+flag (`aiRequestInFlight`, read via `useSyncExternalStore` so both panels
+re-render off the one flag) that both `ask()` and `propose()` check
+synchronously before their first `await` -- nothing can race the
+check-then-claim within one JS tick, so no token or lock object is needed.
+A second attempt while one is running gets a new `'blocked'` phase and a
+plain "wait for it to finish" notice, rendered with a calm sky-toned banner
+-- deliberately not the same amber/red treatment as `unavailable`/`error`,
+because being asked to wait a moment is not a failure. Both submit buttons
+disable on the shared flag, not just their own local `phase === 'thinking'`.
+`AssistantPage.tsx` also gained `unavailableHeading(reason)`, so the
+"ai_unavailable" banner reads "Temporarily unavailable -- try again shortly"
+for a rate limit, "AI not configured" for a missing key, and "AI unavailable"
+otherwise, instead of one static heading for all three. `npm run build`
+(`tsc -b && vite build`) passes.
+
+### Backend test coverage added for the reason classification
+
+Three new tests in `test_ai_mcp.py`, none of them mocking the classification
+itself -- they exercise `provider_router.generate()` and `run_hr_insight`
+directly with a stub that raises an object carrying `status_code = 429`:
+
+- `test_rate_limited_provider_is_reported_as_rate_limited_not_a_generic_failure`
+- `test_run_hr_insight_gives_an_honest_message_per_unavailable_reason` -- also
+  asserts the raw stub exception text (`"rate limit reached"`) never appears
+  in the job's `error` field.
+- `test_proposal_rationale_is_honest_about_a_rate_limited_provider` -- same
+  assertion against the propose to confirm flow's rationale text, plus
+  `result["ai_reason"] == "rate_limited"` and that `requires_human_confirmation`
+  stays `True` regardless (a narration failure is never a reason to block the
+  underlying request).
+
+The one existing assertion this touched -- `"unaffected" in outcome["error"]`
+in `test_provider_failure_returns_clean_unavailable_with_facts_intact` -- still
+holds: that test's `RuntimeError` has no `status_code`, so it classifies as
+`reason="provider_error"`, whose canned message still contains "unaffected".
+
+### CI comment fixed
+
+`.github/workflows/ci.yml`'s advanced-profile smoke test claimed a bare
+`GET /mcp` returns 400. Verified live against FastMCP 3.4.6, from-scratch
+build, in the previous session: it returns **406**. The CI step still passes
+either way (`curl -o /dev/null` without `-f` doesn't care which non-zero
+status it gets), so this was a documentation bug, not a broken gate -- fixed
+so the next person reading it isn't told something false.
+
+### Test count: 431 -> 434, all three new, nothing removed
+
+No test in the suite was Cerebras-fallback-specific -- the two that
+referenced `CEREBRAS_API_KEY` were general "every provider failed" / "no
+provider configured" tests that remain fully meaningful with one provider,
+so they were edited, not deleted. The +3 are the reason-classification tests
+above. Full suite, existing image (bind-mounted source), clean database:
+**434 passed**.
+
+### Demo database reseeded to genuinely pristine
+
+`peoplepay360` (the database `docker compose up` auto-migrates and seeds) had
+accumulated, across this session and prior ones: a pre-existing "September
+Payrun" (documented in an earlier entry as predating any of this work), two
+"UI check -- duplicate July" payruns, a "Demo Scenario" payrun, and **two**
+"AI demo August 2026" payruns from `ai_demo.py` having been run twice, plus
+six extra time-off requests. `python -m app.seed` is additive and idempotent
+-- it does not delete rows it did not create -- so no amount of re-seeding on
+top would have cleaned this. Instead:
+
+1. Stopped `backend`/`worker`/`mcp-server` (they hold the connection pools).
+2. `pg_terminate_backend` on any remaining `peoplepay360` connections, then
+   `DROP DATABASE` / `CREATE DATABASE`. `harmonix360_app` and
+   `harmonix360_admin` are cluster-level roles created `IF NOT EXISTS` by
+   migration 001, so they survive dropping just the database.
+3. `docker compose --profile advanced up -d backend` -- its startup command
+   (`alembic upgrade head && python -m app.seed && uvicorn ...`) rebuilt the
+   schema and seeded from nothing else.
+
+Verified against the README's own "What the seed contains" paragraph, row by
+row: 4 departments, 5 logins, 1 salary structure (`PP360_DEMO`) with exactly
+6 rules including `PP360_LOP`, 5 employees across all 4 departments, exactly
+**1** payrun (July 2026, PAID, 5 payslips), exactly **1** time-off request
+(the Loss-of-Pay scenario's approved unpaid leave, 2026-08-12..08-14). Nothing
+extra. `python -m scripts.rbac_audit` re-passed clean against it (79
+endpoints x 5 roles, exit 0) -- which is itself a caution for whoever demos
+next: that script's two "own record" probes (`POST /attendance/check-in`,
+`POST /time-off-requests/`) write real rows and are not self-cleaning, so
+running it is itself a small deviation from pristine. Re-run the three-step
+reseed above if a completely clean state is needed right before a demo.
+
+### Advanced profile: rebuilt from scratch again, on the actual merged `main`
+
+The previous session's from-scratch build verified phase-9/10 code that
+existed on a branch. This one rebuilds the same way
+(`down` -> remove all four `odoo2026-*` images -> `build --no-cache` ->
+`up -d`) on top of every change in this entry, so the artifact an eval will
+actually run is the one being certified here, not an ancestor of it.
+
+### Final numbers
+
+- `main` @ this commit (see `git log -1` for the hash).
+- Full suite, rebuilt image, clean database: 434 passed.
+- Frontend: `tsc -b && vite build` clean.
+- `uv lock --check`: consistent.

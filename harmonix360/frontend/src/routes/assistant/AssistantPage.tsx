@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { AlertTriangle, Bot, CheckCircle2, Database, Loader2, Send, ShieldQuestion, X } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, Clock, Database, Loader2, Send, ShieldQuestion, X } from 'lucide-react';
 
 import { StatusMessage } from '@/components/StatusMessage';
 import { Badge } from '@/components/ui/badge';
@@ -68,6 +68,18 @@ const SUGGESTED_QUESTION: Record<AiTaskType, string> = {
   anomaly_narration: 'Are there any unusual payroll or HR patterns I should know about?',
   general: 'What changed in this employee’s contract?',
 };
+
+/**
+ * The heading over an "ai_unavailable" banner, chosen from `reason` rather
+ * than a fixed string — a rate limit is worth retrying in a minute, a
+ * missing key is not, and collapsing both into "AI unavailable" hides which
+ * one a viewer is looking at.
+ */
+function unavailableHeading(reason: string | null | undefined): string {
+  if (reason === 'rate_limited') return 'Temporarily unavailable — try again shortly';
+  if (reason === 'not_configured') return 'AI not configured';
+  return 'AI unavailable';
+}
 
 function titleCase(key: string): string {
   return key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
@@ -279,7 +291,7 @@ function AskPanel() {
                 />
               </div>
 
-              <Button type="submit" disabled={ai.phase === 'thinking' || missing.length > 0}>
+              <Button type="submit" disabled={ai.sessionBusy || missing.length > 0}>
                 {ai.phase === 'thinking' ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Investigating…
@@ -294,6 +306,12 @@ function AskPanel() {
                 <p className="text-xs text-slate-500">
                   {missing.map((field) => field.label).join(', ')} required — answers are scoped to a
                   specific record, never to the whole database.
+                </p>
+              )}
+              {ai.sessionBusy && ai.phase !== 'thinking' && (
+                <p className="text-xs text-slate-500">
+                  Another AI request is running in this session — the assistant answers one
+                  question at a time.
                 </p>
               )}
             </form>
@@ -323,11 +341,20 @@ function AskPanel() {
                 Gathering authoritative facts and explaining them…
               </p>
             )}
+            {ai.phase === 'blocked' && ai.notice && (
+              <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-100">
+                <p className="flex items-center gap-2 font-medium text-sky-200">
+                  <Clock className="h-4 w-4" />
+                  Please wait
+                </p>
+                <p className="mt-1 text-xs">{ai.notice}</p>
+              </div>
+            )}
             {(ai.phase === 'unavailable' || ai.phase === 'timeout') && ai.notice && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
                 <p className="flex items-center gap-2 font-medium text-amber-200">
                   <AlertTriangle className="h-4 w-4" />
-                  {ai.phase === 'timeout' ? 'No response yet' : 'AI unavailable'}
+                  {ai.phase === 'timeout' ? 'No response yet' : unavailableHeading(ai.reason)}
                 </p>
                 <p className="mt-1 text-xs">{ai.notice}</p>
               </div>
@@ -442,7 +469,7 @@ function ProposalPanel({ employeeId }: { employeeId: string | undefined }) {
             <Input className="mt-1" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div className="flex items-end">
-            <Button type="submit" disabled={!ready || flow.phase === 'thinking'} className="w-full">
+            <Button type="submit" disabled={!ready || flow.sessionBusy} className="w-full">
               {flow.phase === 'thinking' ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Preparing…
@@ -454,13 +481,38 @@ function ProposalPanel({ employeeId }: { employeeId: string | undefined }) {
           </div>
         </form>
 
-        {flow.notice && flow.phase !== 'done' && <StatusMessage error={new Error(flow.notice)} />}
+        {flow.phase === 'blocked' && flow.notice && (
+          <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 text-sm text-sky-100">
+            <p className="flex items-center gap-2 font-medium text-sky-200">
+              <Clock className="h-4 w-4" />
+              Please wait
+            </p>
+            <p className="mt-1 text-xs">{flow.notice}</p>
+          </div>
+        )}
+        {flow.phase === 'timeout' && flow.notice && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+            <p className="flex items-center gap-2 font-medium text-amber-200">
+              <AlertTriangle className="h-4 w-4" />
+              No response yet
+            </p>
+            <p className="mt-1 text-xs">{flow.notice}</p>
+          </div>
+        )}
+        {flow.phase === 'error' && flow.notice && <StatusMessage error={new Error(flow.notice)} />}
 
         {flow.proposal && (
           <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/5 p-4">
             <div className="flex items-center justify-between gap-2">
               <p className="font-medium text-slate-100">Proposed — awaiting your confirmation</p>
-              <Badge variant="warning">pending review</Badge>
+              <div className="flex items-center gap-2">
+                {flow.reason === 'rate_limited' && (
+                  <Badge variant="secondary" className="gap-1">
+                    <Clock className="h-3 w-3" /> AI busy
+                  </Badge>
+                )}
+                <Badge variant="warning">pending review</Badge>
+              </div>
             </div>
             <p className="mt-2 text-sm text-slate-200">{flow.proposal.proposal.summary}</p>
             <p className="mt-2 text-sm text-slate-400">{flow.proposal.proposal.rationale}</p>

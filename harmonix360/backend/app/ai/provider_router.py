@@ -1,16 +1,27 @@
 """
-AI Provider Router — Groq → Cerebras fallback chain.
+AI Provider Router — single provider (Groq), no fallback.
 
 Architecture ref: §8.1 — provider_router.py
 Interface: `async def generate(prompt, context, task_type) -> AIResponse`
 1. Check Redis cache first.
-2. Try Groq (rate-limited). On 429/timeout, fall to Cerebras.
-3. Try Cerebras (rate-limited). On failure, raise AIUnavailableError.
-# TODO: add Ollama as final fallback once available locally.
-   When Ollama is added, insert it as a third tier after Cerebras
-   in the _PROVIDERS list below. The ProviderConfig dataclass and
-   fallback loop already support N providers — just append.
-4. On success, cache the response and return.
+2. Try Groq (rate-limited). On failure, raise AIUnavailableError.
+# TODO: add Ollama as a second tier once available locally.
+   When Ollama is added, append it to the _PROVIDERS list below. The
+   ProviderConfig dataclass and the loop already support N providers.
+3. On success, cache the response and return.
+
+CEREBRAS WAS REMOVED, NOT DISABLED
+-----------------------------------
+Cerebras was the original fallback tier. It was cut on 2026-09-06 after
+verification showed its account authenticates but every completion returns
+`402 Payment Required` — an unfunded account, not a transient outage. It was
+never a working fallback in this environment; it was a second failure mode
+that made `generate()` look more resilient than it was. Groq alone has an
+8000 TPM ceiling and no fallback now — see `app/api/v1/routers/ai.py` for the
+single-flight guard and the 429 handling this makes necessary on the caller
+side. Re-adding a second provider is fine; re-adding Cerebras specifically
+without funding the account is not — it would silently reintroduce exactly
+the dead path this removed.
 
 THE PROVIDER IS AN INFERENCE ENGINE, NOT A SOURCE OF TRUTH
 ----------------------------------------------------------
@@ -55,8 +66,25 @@ class AIResponse(BaseModel):
 
 
 class AIUnavailableError(Exception):
-    """Raised when all AI providers fail."""
-    pass
+    """Raised when all AI providers fail.
+
+    `reason` is what lets a caller give an honest, specific message instead of
+    forwarding a raw provider exception into the UI — "the request volume
+    limit was hit, try again shortly" reads very differently from "no
+    provider is configured", and a caller that only has `str(exc)` cannot
+    tell the two apart without parsing prose.
+
+      not_configured — no provider has an API key set at all.
+      rate_limited   — every attempted provider hit our own per-minute cap or
+                        the provider's own 429. Transient; retrying later is
+                        the right advice.
+      provider_error — a provider was called and failed for some other
+                        reason (timeout, 5xx, malformed response).
+    """
+
+    def __init__(self, message: str, reason: str = "provider_error") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +148,7 @@ class ProviderConfig:
 
 _PROVIDERS = [
     ProviderConfig("groq", "GROQ_API_KEY", "GROQ_MODEL", "GROQ_RPM"),
-    ProviderConfig("cerebras", "CEREBRAS_API_KEY", "CEREBRAS_MODEL", "CEREBRAS_RPM"),
-    # TODO: add Ollama as final fallback once available locally
+    # TODO: add Ollama as a second tier once available locally
     # ProviderConfig("ollama", "OLLAMA_API_KEY", "OLLAMA_MODEL", "OLLAMA_RPM"),
 ]
 
@@ -169,28 +196,8 @@ async def _call_groq(prompt: str, model: str, api_key: str) -> tuple[str, int]:
     return text, tokens
 
 
-async def _call_cerebras(prompt: str, model: str, api_key: str) -> tuple[str, int]:
-    """Call Cerebras API. Returns (response_text, token_count)."""
-    from cerebras.cloud.sdk import AsyncCerebras
-
-    client = AsyncCerebras(api_key=api_key, timeout=settings.AI_PROVIDER_TIMEOUT)
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_MESSAGE},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=_TEMPERATURE,
-        max_tokens=_MAX_TOKENS,
-    )
-    text = response.choices[0].message.content or ""
-    tokens = response.usage.total_tokens if response.usage else 0
-    return text, tokens
-
-
 _CALL_FUNCTIONS = {
     "groq": _call_groq,
-    "cerebras": _call_cerebras,
     # TODO: add Ollama call function when available
 }
 
@@ -204,7 +211,7 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
     Primary AI generation interface per Architecture Section 5.
 
     1. Check Redis cache.
-    2. Try each provider in order (Groq → Cerebras).
+    2. Try each configured provider in order (Groq only — no fallback).
     3. On success, cache and return.
     4. On all failures, raise AIUnavailableError.
     """
@@ -228,6 +235,10 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
 
     # 2. Try providers in order
     errors: list[str] = []
+    # Distinguishes WHY every provider failed, so a caller can give an honest
+    # message instead of forwarding a raw exception (see AIUnavailableError).
+    any_configured = False
+    saw_rate_limit = False
 
     # Trace 2 of the three Architecture §8.5 allows. Attributes are metadata
     # only — task type, provider, latency, token counts. The prompt and the
@@ -242,12 +253,14 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
                 errors.append(f"{provider_cfg.name}: no API key configured")
                 logger.info("Skipping %s — no API key", provider_cfg.name)
                 continue
+            any_configured = True
 
             # Check rate limit (fail fast to fallback)
             allowed = await ProviderRateLimiter.check_and_increment(
                 provider_cfg.name, provider_cfg.rpm
             )
             if not allowed:
+                saw_rate_limit = True
                 errors.append(f"{provider_cfg.name}: rate limited")
                 continue
 
@@ -308,6 +321,13 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
                     error_msg = f"{provider_cfg.name}: {type(e).__name__}: {e}"
                     errors.append(error_msg)
 
+                    # Groq's SDK (and most OpenAI-compatible ones) raise a
+                    # `status_code` attribute on API errors — 429 here means
+                    # the provider itself rate-limited us, same as our own
+                    # ProviderRateLimiter tripping above.
+                    if getattr(e, "status_code", None) == 429:
+                        saw_rate_limit = True
+
                     span.set_attribute("latency_ms", latency_ms)
                     span.set_attribute("error.type", type(e).__name__)
 
@@ -327,4 +347,10 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
     # 4. All providers failed
     error_summary = "; ".join(errors)
     logger.error("All AI providers failed: %s", error_summary)
-    raise AIUnavailableError(f"All AI providers failed: {error_summary}")
+    if not any_configured:
+        reason = "not_configured"
+    elif saw_rate_limit:
+        reason = "rate_limited"
+    else:
+        reason = "provider_error"
+    raise AIUnavailableError(f"All AI providers failed: {error_summary}", reason=reason)

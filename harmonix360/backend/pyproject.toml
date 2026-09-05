@@ -33,9 +33,9 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.14.0",
     "httpx>=0.27.0",
     "python-multipart>=0.0.9",
-    # AI providers (Week 2)
+    # AI provider (Week 2) — Groq only, no fallback. See
+    # app/ai/provider_router.py for why Cerebras was removed.
     "groq>=0.9.0",
-    "cerebras-cloud-sdk>=1.0.0",
     # MCP server (Week 2)
     "fastmcp>=2.0.0",
     # Salary rule formulas (PS A6) — restricted grammar, never eval()

@@ -28,6 +28,31 @@ from app.jobs.broker import broker
 
 logger = logging.getLogger("harmonix360.jobs.ai")
 
+#: Honest, canned messages keyed by `AIUnavailableError.reason` — never the
+#: raw exception text, which for a provider failure can be a full JSON error
+#: body (see provider_router.py's `_call_groq`). "unaffected" appears in every
+#: branch on purpose: it is what a caller-facing test pins on, and what tells
+#: a viewer the ERP facts below are not in question.
+_UNAVAILABLE_MESSAGES = {
+    "not_configured": (
+        "No AI provider is configured, so no narration could be produced. "
+        "The authoritative ERP facts below were still retrieved and are unaffected."
+    ),
+    "rate_limited": (
+        "The AI assistant is temporarily unavailable — the request volume limit "
+        "was reached. Try again in a minute or two. The authoritative payroll "
+        "data below is unaffected."
+    ),
+    "provider_error": (
+        "The AI provider failed to respond, so no narration could be produced. "
+        "The authoritative ERP facts below were still retrieved and are unaffected."
+    ),
+}
+
+
+def _unavailable_message(reason: str) -> str:
+    return _UNAVAILABLE_MESSAGES.get(reason, _UNAVAILABLE_MESSAGES["provider_error"])
+
 
 @broker.task(task_name="run_ai_generate")
 async def run_ai_generate(prompt: str, context: dict, task_type: str) -> dict:
@@ -43,7 +68,12 @@ async def run_ai_generate(prompt: str, context: dict, task_type: str) -> dict:
         return {"status": "completed", "result": response.model_dump()}
     except AIUnavailableError as e:
         logger.warning("AI unavailable in task: %s", e)
-        return {"status": "ai_unavailable", "result": None, "error": str(e)}
+        return {
+            "status": "ai_unavailable",
+            "result": None,
+            "error": _unavailable_message(e.reason),
+            "reason": e.reason,
+        }
     except Exception as e:
         logger.exception("Unexpected error in AI task")
         return {"status": "failed", "result": None, "error": str(e)}
@@ -95,10 +125,8 @@ async def run_hr_insight(
                 "fact_sources": assembled["sources"],
                 "subject": assembled["subject"],
             },
-            "error": (
-                "No AI provider is currently available, so no narration could be produced. "
-                "The authoritative ERP facts below were still retrieved and are unaffected."
-            ),
+            "error": _unavailable_message(e.reason),
+            "reason": e.reason,
         }
     except Exception as e:
         logger.exception("Unexpected error narrating task_type=%s", task_type)

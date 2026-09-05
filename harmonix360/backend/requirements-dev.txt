@@ -21,7 +21,6 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
     # via
-    #   cerebras-cloud-sdk
     #   groq
     #   httpx
     #   mcp
@@ -62,8 +61,6 @@ cachetools==7.1.7
     # via py-key-value-aio
 caio==0.12.2
     # via aiofile
-cerebras-cloud-sdk==1.91.0
-    # via harmonix360-backend
 certifi==2026.7.22
     # via
     #   httpcore
@@ -98,9 +95,7 @@ cssselect2==0.10.1
 cyclopts==4.22.5
     # via fastmcp-slim
 distro==1.9.0
-    # via
-    #   cerebras-cloud-sdk
-    #   groq
+    # via groq
 dnspython==2.8.0
     # via email-validator
 docstring-parser==0.18.0
@@ -143,27 +138,20 @@ h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
-h2==4.4.1
-    # via httpx
 hashids==1.3.1
     # via harmonix360-backend
-hpack==4.2.0
-    # via h2
 httpcore==1.0.9
     # via httpx
 httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
-    #   cerebras-cloud-sdk
     #   fastmcp-slim
     #   groq
     #   harmonix360-backend
     #   mcp
 httpx-sse==0.4.3
     # via mcp
-hyperframe==6.1.0
-    # via h2
 idna==3.18
     # via
     #   anyio
@@ -330,7 +318,6 @@ pycron==3.2.0
     # via taskiq
 pydantic==2.13.4
     # via
-    #   cerebras-cloud-sdk
     #   fastapi
     #   fastmcp-slim
     #   groq
@@ -425,9 +412,7 @@ simpleeval==1.0.7
 six==1.17.0
     # via ecdsa
 sniffio==1.3.1
-    # via
-    #   cerebras-cloud-sdk
-    #   groq
+    # via groq
 sqlalchemy==2.0.51
     # via
     #   alembic
@@ -460,7 +445,6 @@ typing-extensions==4.16.0
     #   aiosignal
     #   alembic
     #   anyio
-    #   cerebras-cloud-sdk
     #   exceptiongroup
     #   fastapi
     #   fastmcp-slim

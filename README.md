@@ -76,8 +76,8 @@ clone is immediately usable rather than healthy-but-empty.
 | API | http://localhost:8000 |
 | API docs | http://localhost:8000/docs |
 
-No Groq or Cerebras key is needed. No MCP process, no collector. This is the
-profile the core is developed and demoed against.
+No Groq key is needed. No MCP process, no collector. This is the profile the
+core is developed and demoed against.
 
 ### Advanced (Phase 8+)
 
@@ -88,8 +88,14 @@ docker compose --profile advanced up --build
 Everything above **plus** the MCP server (Streamable HTTP on
 http://localhost:8100) and an OpenTelemetry collector (OTLP on 4317/4318). Set
 `OTEL_ENABLED=true` to have the backend export traces to it, and put
-`GROQ_API_KEY` / `CEREBRAS_API_KEY` in `.env` if you want the AI layer live —
-without them it reports "unavailable" and never fabricates an answer.
+`GROQ_API_KEY` in `.env` if you want the AI layer live — without it, it
+reports "unavailable" and never fabricates an answer.
+
+Groq is the sole AI provider — no fallback. It has an 8000 TPM ceiling on the
+free tier, so the AI assistant accepts one in-flight question at a time and
+surfaces a plain "try again shortly" state on a real 429 rather than queuing
+requests it cannot serve. That never touches payroll, the dashboard, or any
+other non-AI part of the app.
 
 Both commands are expected to work from a clean clone at every commit. The
 second one is how we check that the platform layer still works, not just that

@@ -32,6 +32,11 @@ class AIDecision(BaseModel):
     rationale: str
     raw_output: Optional[str] = None
     provider: str
+    #: Set only when status == "ai_unavailable" — see
+    #: `provider_router.AIUnavailableError.reason`. Lets a caller distinguish
+    #: "try again shortly" from "nobody has configured a key" without parsing
+    #: `rationale`'s prose.
+    reason: Optional[str] = None
 
 
 class AIDecisionNode:
@@ -80,14 +85,24 @@ class AIDecisionNode:
                 context=workflow_context,
                 task_type=task_type,
             )
-        except AIUnavailableError:
-            logger.warning("All AI providers unavailable for decision node (task_type=%s)", task_type)
+        except AIUnavailableError as e:
+            logger.warning(
+                "All AI providers unavailable for decision node (task_type=%s, reason=%s)",
+                task_type, e.reason,
+            )
+            rationale = (
+                "The AI assistant is temporarily unavailable — the request volume limit "
+                "was reached. Forcing human review; try again shortly."
+                if e.reason == "rate_limited"
+                else "All AI providers are currently unreachable. Forcing human review."
+            )
             return AIDecision(
                 decision=fallback_decision,
                 status="ai_unavailable",
-                rationale="All AI providers are currently unreachable. Forcing human review.",
+                rationale=rationale,
                 raw_output=None,
                 provider="none",
+                reason=e.reason,
             )
 
         # Parse the AI response

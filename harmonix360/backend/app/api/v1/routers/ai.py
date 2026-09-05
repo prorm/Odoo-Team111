@@ -98,6 +98,10 @@ class AIJobStatusResponse(BaseModel):
     status: str  # "pending" | "completed" | "failed" | "ai_unavailable"
     result: Optional[dict] = None
     error: Optional[str] = None
+    #: Set only when status == "ai_unavailable" — "rate_limited" |
+    #: "not_configured" | "provider_error". Lets the UI show a distinct,
+    #: honest state for a transient rate limit instead of a generic banner.
+    reason: Optional[str] = None
 
 
 # ------------------------------------------------------------------- routes
@@ -252,6 +256,7 @@ async def get_ai_job_status(
             status=data.get("status", "completed"),
             result=data.get("result"),
             error=data.get("error"),
+            reason=data.get("reason"),
         )
     except Exception:
         # The result backend raises until the worker has written a result.
