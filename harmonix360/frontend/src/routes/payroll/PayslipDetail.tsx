@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { ViewCalculation } from '@/components/insights/ViewCalculation';
 import { WARNING_LABELS } from '@/types/payroll';
 import type { Payslip } from '@/types/payroll';
 import { PayslipDocument } from './PayslipDocument';
@@ -35,6 +36,12 @@ export function PayslipDetail({ payslip, onClose }: {
         )}
 
         <PayslipDocument id={payslip.id} printable={payslip.status === 'validated' || payslip.status === 'paid'} />
+
+        {/* PRD §5.6/§5.9. Read-only, below the document: the payslip is the
+            record, this explains how it was produced. */}
+        <div className="mt-6 border-t border-slate-800 pt-4">
+          <ViewCalculation payslipId={payslip.id} />
+        </div>
       </DialogContent>
     </Dialog>
   );

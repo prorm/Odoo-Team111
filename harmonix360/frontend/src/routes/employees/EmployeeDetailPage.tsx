@@ -9,6 +9,7 @@ import {
   Pencil,
 } from 'lucide-react';
 
+import { ContractTimeMachine } from '@/components/insights/ContractTimeMachine';
 import { StatusMessage } from '@/components/StatusMessage';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -149,6 +150,15 @@ export function EmployeeDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* PRD §5.8. A read view over this employee's contract history, with the
+          period-to-contract resolution done by the payroll engine's own
+          resolver rather than by a date comparison in the browser. */}
+      <Card>
+        <CardContent className="pt-6">
+          <ContractTimeMachine employeeId={employee.id} />
+        </CardContent>
+      </Card>
 
       <EmployeeForm open={editing} onOpenChange={setEditing} employee={employee} />
     </div>

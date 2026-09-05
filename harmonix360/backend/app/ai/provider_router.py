@@ -229,11 +229,12 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
     # 2. Try providers in order
     errors: list[str] = []
 
-    from app.core.telemetry import get_tracer
-    tracer = get_tracer("harmonix360.ai.provider_router")
+    # Trace 2 of the three Architecture §8.5 allows. Attributes are metadata
+    # only — task type, provider, latency, token counts. The prompt and the
+    # completion are never attached: they contain payroll.
+    from app.core.telemetry import ai_span
 
-    with tracer.start_as_current_span("ai_provider_router_generate") as parent_span:
-        parent_span.set_attribute("ai.task_type", task_type)
+    with ai_span("provider_route", task_type=task_type, provider_count=len(_PROVIDERS)):
 
         for provider_cfg in _PROVIDERS:
             # Skip if no API key configured
@@ -258,20 +259,20 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
             # Attempt the call
             start = time.time()
 
-            with tracer.start_as_current_span(f"ai_provider_call_{provider_cfg.name}") as span:
-                span.set_attribute("ai.provider", provider_cfg.name)
-                span.set_attribute("ai.model", provider_cfg.model)
-                span.set_attribute("ai.task_type", task_type)
-
+            with ai_span(
+                "provider_call",
+                provider=provider_cfg.name,
+                model=provider_cfg.model,
+                task_type=task_type,
+            ) as span:
                 try:
                     text, token_count = await call_fn(
                         full_prompt, provider_cfg.model, provider_cfg.api_key
                     )
                     latency_ms = int((time.time() - start) * 1000)
 
-                    span.set_attribute("ai.latency_ms", latency_ms)
-                    span.set_attribute("ai.token_count", token_count)
-                    span.set_attribute("ai.status", "success")
+                    span.set_attribute("latency_ms", latency_ms)
+                    span.set_attribute("token_count", token_count)
 
                     response = AIResponse(
                         text=text,
@@ -307,10 +308,8 @@ async def generate(prompt: str, context: dict, task_type: str) -> AIResponse:
                     error_msg = f"{provider_cfg.name}: {type(e).__name__}: {e}"
                     errors.append(error_msg)
 
-                    span.set_attribute("ai.latency_ms", latency_ms)
-                    span.set_attribute("ai.status", "failed")
-                    span.set_attribute("ai.error", str(e))
-                    span.record_exception(e)
+                    span.set_attribute("latency_ms", latency_ms)
+                    span.set_attribute("error.type", type(e).__name__)
 
                     logger.warning(
                         json.dumps({

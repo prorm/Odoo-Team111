@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attendance import Attendance
 from app.models.enums import WEEKDAY_ORDER, AttendanceStatus
 from app.repositories.hr import AttendanceRepository
+from app.realtime.events import attendance_recorded
 from app.services.base import BaseService
 from app.services.hr_access import (
     actor_id,
@@ -133,6 +134,9 @@ class AttendanceService(BaseService[Attendance]):
             row.public_id,
             after_diff=self._snapshot(row),
         )
+        # Staged only. `get_db` broadcasts it after this transaction commits
+        # (Architecture §8.4); a rolled-back check-in is never announced.
+        attendance_recorded(self.session, row, action="checked_in")
         return row
 
     async def check_in(self, employee_id, user):
@@ -155,6 +159,7 @@ class AttendanceService(BaseService[Attendance]):
         await self.audit(
             user.email, "CHECK_OUT", row.public_id, after_diff=self._snapshot(row)
         )
+        attendance_recorded(self.session, row, action="checked_out")
         return row
 
     async def correct(self, public_id, dto, user):
@@ -177,6 +182,7 @@ class AttendanceService(BaseService[Attendance]):
             after_diff=self._snapshot(row),
             reason=row.correction_reason,
         )
+        attendance_recorded(self.session, row, action="corrected")
         return row
 
     async def delete_attendance(self, public_id, version, user):

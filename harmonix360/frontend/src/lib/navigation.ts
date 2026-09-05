@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bot,
+  ShieldAlert,
   CalendarDays,
   Clock,
   FileText,
@@ -59,6 +60,9 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: Bot,
     roles: [...HR_ROLES, ...PAYROLL_ROLES, UserRole.EMPLOYEE],
   },
+  // PS §5.7. Payroll roles only: every check reads payroll or the records that
+  // gate it, and Architecture §5 gives HR Manager no payroll access.
+  { name: 'Anomalies', href: '/anomalies', icon: ShieldAlert, roles: PAYROLL_ROLES },
 ];
 
 export function visibleNavItems(role: UserRole | undefined): NavItem[] {

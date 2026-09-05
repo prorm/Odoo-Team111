@@ -14,6 +14,7 @@ import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
 import { ReportsPage } from './routes/reports/ReportsPage';
 import { MyProfilePage } from './routes/profile/MyProfilePage';
 import { AssistantPage } from './routes/assistant/AssistantPage';
+import { AnomaliesPage } from './routes/insights/AnomaliesPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -69,6 +70,9 @@ const router = createBrowserRouter([
       // those sections already contain rather than owning records of its own,
       // so it sits after them rather than competing for the same place.
       { path: 'assistant', element: <AssistantPage /> },
+      // PRD §5.7. Deterministic checks over real records, alongside the live
+      // payroll feed — a read-only screen, like everything else Phase 10 adds.
+      { path: 'anomalies', element: <AnomaliesPage /> },
       // Anything else lands on Employees rather than a blank screen.
       { path: '*', element: <Navigate to="/employees" replace /> },
     ],

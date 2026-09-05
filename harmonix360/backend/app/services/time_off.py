@@ -26,6 +26,7 @@ from app.repositories.hr import (
     TimeOffTypeRepository,
 )
 from app.services.attendance import schedule_expectations
+from app.realtime.events import time_off_decided, time_off_requested
 from app.services.base import BaseService
 from app.services.hr_access import (
     actor_id,
@@ -258,6 +259,11 @@ class TimeOffRequestService(BaseService[TimeOffRequest]):
                 )
                 if not leave_type.requires_approval:
                     await self._approve(row, user, None, automatic=True)
+            # Staged inside the transaction, dispatched by `get_db` after it
+            # commits. An auto-approved type produces both events, in order.
+            time_off_requested(self.session, row)
+            if row.status is RS.APPROVED:
+                time_off_decided(self.session, row)
             return row
         except StaleDataError as exc:
             raise HTTPException(
@@ -311,6 +317,7 @@ class TimeOffRequestService(BaseService[TimeOffRequest]):
                         after_diff={"status": row.status.value},
                         reason=dto.decision_note,
                     )
+            time_off_decided(self.session, row)
             return row
         except StaleDataError as exc:
             raise HTTPException(

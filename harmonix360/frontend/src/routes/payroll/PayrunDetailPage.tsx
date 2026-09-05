@@ -20,8 +20,10 @@ import {
   usePayrunValidation,
   useSendPayslips,
 } from '@/hooks/usePayroll';
-import { WARNING_LABELS, formatMoney } from '@/types/payroll';
+import { formatMoney } from '@/types/payroll';
 import type { ComputeResult, Payslip } from '@/types/payroll';
+
+import { FirewallPanel } from '@/components/insights/FirewallPanel';
 
 import { ErrorMessage } from '../hr-shared';
 import { PayslipDetail } from './PayslipDetail';
@@ -178,50 +180,17 @@ export function PayrunDetailPage() {
         </section>
       )}
 
-      {validation.data && validation.data.issues.length > 0 && (
-        <section
-          className={`rounded-lg border p-4 ${
-            blocking > 0 ? 'border-rose-800/60 bg-rose-950/30' : 'border-amber-800/50 bg-amber-950/25'
-          }`}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-sm font-semibold text-slate-100">
-              {blocking} blocking · {validation.data.advisory_count} advisory
-            </h2>
-            {Object.entries(validation.data.blocking_by_code).map(([code, count]) => (
-              <Badge key={code} variant="destructive">
-                {WARNING_LABELS[code] ?? code}: {count}
-              </Badge>
-            ))}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => validation.refetch()}
-              disabled={validation.isFetching}
-            >
-              {validation.isFetching ? 'Rechecking…' : 'Revalidate'}
-            </Button>
-          </div>
-          <ul className="mt-3 space-y-1 text-sm text-slate-300">
-            {validation.data.issues.map((issue, index) => (
-              <li key={`${issue.code}-${index}`}>
-                <span
-                  className={issue.severity === 'blocking' ? 'text-rose-300' : 'text-amber-300'}
-                >
-                  {WARNING_LABELS[issue.code] ?? issue.code}
-                </span>{' '}
-                — {issue.message}
-              </li>
-            ))}
-          </ul>
-          {blocking > 0 && (
-            <p className="mt-3 text-xs text-slate-400">
-              Fix the records above, then <strong>recompute</strong>. Revalidate re-reads the
-              current payslips; it does not re-run the engine, so a payslip keeps the warnings it
-              was computed with until the run is computed again.
-            </p>
-          )}
-        </section>
+      {/* PRD §5.10, Phase 10: the same findings, grouped by code with the fix
+          and a link to the record that has to change. `usePayrunValidation`
+          still backs the Validate button's disabled state above; this panel is
+          the visibility layer over the identical server report. */}
+      {run.status !== 'draft' && (
+        <FirewallPanel
+          payrunId={run.id}
+          onRevalidate={() => validate.mutate({ payrunId: run.id, version: run.version })}
+          revalidating={validate.isPending}
+          revalidateError={validate.error}
+        />
       )}
 
       <section>

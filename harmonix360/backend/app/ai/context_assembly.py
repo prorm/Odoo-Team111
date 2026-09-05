@@ -127,14 +127,21 @@ async def _build(session, *, task_type: str, question: str, actor_email: str, pa
 
 async def assemble(*, task_type: str, question: str, actor_email: str, params: dict) -> dict:
     """The prompt and the facts behind it, ready for a provider call."""
+    from app.core.telemetry import ai_span
+
     async with AsyncSessionLocal() as session:
-        context = await _build(
-            session,
-            task_type=task_type,
-            question=question,
-            actor_email=actor_email,
-            params=params,
-        )
+        with ai_span("assemble_context", task_type=task_type) as span:
+            context = await _build(
+                session,
+                task_type=task_type,
+                question=question,
+                actor_email=actor_email,
+                params=params,
+            )
+            # Section names and counts. Not the facts themselves — those are
+            # payroll, and a span is a telemetry boundary like any other.
+            span.set_attribute("fact_sections", len(context.facts))
+            span.set_attribute("unavailable_count", len(context.unavailable))
         # Read-only work. Rolled back explicitly so a lazy-load that opened a
         # transaction cannot leave one idle in the pool.
         await session.rollback()

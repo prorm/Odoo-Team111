@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import server_utc_now
+from app.core.telemetry import sync_span
 from app.core.exceptions import ConflictError
 from app.models.entities import SyncMutation
 from app.repositories.base import dump_entity_columns
@@ -159,50 +160,55 @@ class SyncService:
         """
         actor_key = user.email
         results: List[PushMutationResult] = []
-        for mutation in mutations:
-            replay = await self._find_replay(actor_key, mutation.client_mutation_id)
-            if replay is not None:
-                results.append(replay)
-                continue
+        # Trace 3 of the three Architecture §8.5 allows: client mutation ->
+        # validation -> transaction -> audit. Counts and entity types only; a
+        # mutation payload can carry an employee's attendance, and a span is
+        # exported to a telemetry backend.
+        with sync_span("push_batch", mutation_count=len(mutations), actor_role=getattr(user.role, "value", str(user.role))):
+            for mutation in mutations:
+                replay = await self._find_replay(actor_key, mutation.client_mutation_id)
+                if replay is not None:
+                    results.append(replay)
+                    continue
 
-            entry = get_syncable_entity(mutation.entity_type)
-            if entry is None:
-                result = PushMutationResult(
-                    client_mutation_id=mutation.client_mutation_id,
-                    outcome="rejected",
-                    entity_type=mutation.entity_type,
-                    entity_id=mutation.entity_id,
-                    error=PushErrorDetail(
-                        code="UNKNOWN_ENTITY_TYPE",
-                        message=f"'{mutation.entity_type}' is not a syncable entity type. "
-                                f"Registered: {registered_entity_types()}",
-                    ),
-                )
-            elif mutation.op not in entry.allowed_ops:
-                # Architecture §8.3 scopes offline capability per operation as
-                # well as per entity. An attendance CORRECTION is an UPDATE,
-                # and it is online-only and role-gated; letting it through here
-                # would bypass `require_hr` by choosing a different verb.
-                result = PushMutationResult(
-                    client_mutation_id=mutation.client_mutation_id,
-                    outcome="rejected",
-                    entity_type=mutation.entity_type,
-                    entity_id=mutation.entity_id,
-                    error=PushErrorDetail(
-                        code="OPERATION_NOT_SYNCABLE",
-                        message=(
-                            f"'{mutation.op}' is not syncable for "
-                            f"'{mutation.entity_type}'. Syncable: "
-                            f"{sorted(entry.allowed_ops)}. This operation stays "
-                            "online-only on purpose."
+                entry = get_syncable_entity(mutation.entity_type)
+                if entry is None:
+                    result = PushMutationResult(
+                        client_mutation_id=mutation.client_mutation_id,
+                        outcome="rejected",
+                        entity_type=mutation.entity_type,
+                        entity_id=mutation.entity_id,
+                        error=PushErrorDetail(
+                            code="UNKNOWN_ENTITY_TYPE",
+                            message=f"'{mutation.entity_type}' is not a syncable entity type. "
+                                    f"Registered: {registered_entity_types()}",
                         ),
-                    ),
-                )
-            else:
-                result = await self._apply_one_guarded(entry, mutation, user)
+                    )
+                elif mutation.op not in entry.allowed_ops:
+                    # Architecture §8.3 scopes offline capability per operation as
+                    # well as per entity. An attendance CORRECTION is an UPDATE,
+                    # and it is online-only and role-gated; letting it through here
+                    # would bypass `require_hr` by choosing a different verb.
+                    result = PushMutationResult(
+                        client_mutation_id=mutation.client_mutation_id,
+                        outcome="rejected",
+                        entity_type=mutation.entity_type,
+                        entity_id=mutation.entity_id,
+                        error=PushErrorDetail(
+                            code="OPERATION_NOT_SYNCABLE",
+                            message=(
+                                f"'{mutation.op}' is not syncable for "
+                                f"'{mutation.entity_type}'. Syncable: "
+                                f"{sorted(entry.allowed_ops)}. This operation stays "
+                                "online-only on purpose."
+                            ),
+                        ),
+                    )
+                else:
+                    result = await self._apply_one_guarded(entry, mutation, user)
 
-            await self._log_mutation(actor_key, mutation, result)
-            results.append(result)
+                await self._log_mutation(actor_key, mutation, result)
+                results.append(result)
 
         return PushResponse(results=results)
 
@@ -254,7 +260,12 @@ class SyncService:
         """
         try:
             async with self.session.begin_nested():
-                return await self._apply_one(entry, mutation, user)
+                with sync_span(
+                    "apply_mutation",
+                    entity_type=mutation.entity_type,
+                    op=mutation.op,
+                ):
+                    return await self._apply_one(entry, mutation, user)
         except ConflictError as exc:
             # Defense-in-depth: version_id_col's own flush-time check caught a
             # race the pre-check in `_apply_one` didn't (two ops in the same

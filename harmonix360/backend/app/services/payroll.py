@@ -71,6 +71,8 @@ from app.repositories.hr import (
     PayslipRepository,
     SalaryStructureRepository,
 )
+from app.core.telemetry import payroll_span
+from app.realtime.events import delivery_progress, payroll_progress
 from app.services.base import BaseService
 from app.services.payroll_context import (
     BLOCKING,
@@ -113,6 +115,24 @@ _PAYSLIP_LOADS = (
     selectinload(Payslip.lines),
     selectinload(Payslip.payrun),
 )
+
+
+def _trace_compute_outcome(payrun, computed, skipped) -> None:
+    """Close the payroll trace with the run's shape.
+
+    A separate function so the span is emitted from exactly one place and the
+    attribute list is reviewable in one glance — this is the span someone will
+    look at first when asking "what did this compute actually do", and it must
+    never grow an amount.
+    """
+    with payroll_span(
+        "write_payslips",
+        payrun_id=payrun.public_id,
+        computed_count=len(computed),
+        skipped_count=len(skipped),
+        status=payrun.status.value,
+    ):
+        pass
 
 
 class PayrunService(BaseService[Payrun]):
@@ -311,13 +331,18 @@ class PayrunService(BaseService[Payrun]):
         """
         payrun = await self.get_or_404(public_id)
 
-        await acquire_entity_lock(self.session, "payrun", payrun.id)
-        payrun = await self._reload(payrun.id)
+        # Trace 1 of the three Architecture §8.5 allows. Counts and public ids
+        # only — never an amount: a span attribute is exported to a telemetry
+        # backend, which is a boundary §10 applies to like any other.
+        with payroll_span("acquire_lock", payrun_id=payrun.public_id):
+            await acquire_entity_lock(self.session, "payrun", payrun.id)
+            payrun = await self._reload(payrun.id)
 
         self._assert_version(payrun, version)
         self._assert_recomputable(payrun)
 
-        structure = await self._load_structure(payrun.salary_structure_id)
+        with payroll_span("load_structure", payrun_id=payrun.public_id):
+            structure = await self._load_structure(payrun.salary_structure_id)
         active_links = [link for link in structure.rule_links if link.salary_rule.is_active]
         if not active_links:
             raise HTTPException(
@@ -337,7 +362,12 @@ class PayrunService(BaseService[Payrun]):
             for link in active_links
         }
 
-        await self._delete_payslips(payrun)
+        with payroll_span(
+            "replace_payslips",
+            payrun_id=payrun.public_id,
+            selected_employees=len(payrun.selected_employees),
+        ):
+            await self._delete_payslips(payrun)
 
         computed: list[Payslip] = []
         skipped: list[dict] = []
@@ -376,6 +406,7 @@ class PayrunService(BaseService[Payrun]):
 
         payrun.computation_warnings = computation_warnings
         payrun.status = PayrunStatus.COMPUTED
+        _trace_compute_outcome(payrun, computed, skipped)
         # A recompute replaces every payslip in the run, which is a material
         # change even when the status letter does not move (COMPUTED ->
         # COMPUTED). Forcing the UPDATE bumps `version`, so a client holding
@@ -399,6 +430,19 @@ class PayrunService(BaseService[Payrun]):
             },
         )
 
+        # Staged, not sent (Architecture §8.4). `get_db` dispatches it after the
+        # commit; if the commit fails, this is discarded with the transaction
+        # rather than announcing payslips that do not exist. Nothing above this
+        # line changed: no amount, no rule, no persisted column.
+        payroll_progress(
+            self.session,
+            payrun,
+            stage="computed",
+            computed=len(computed),
+            skipped=len(skipped),
+            blocking=blocking,
+        )
+
         return {
             "payrun": await self._reload(payrun.id),
             "computed": computed,
@@ -418,9 +462,15 @@ class PayrunService(BaseService[Payrun]):
     ) -> Payslip:
         """One employee's payslip: context, resolver, lines, warnings."""
         # Step 3 — the computation context, from Attendance + approved Time Off.
-        context = await build_payroll_context(
-            self.session, employee, contract, payrun.period_start, payrun.period_end, now=now
-        )
+        with payroll_span(
+            "build_context",
+            payrun_id=payrun.public_id,
+            employee_id=employee.public_id,
+            contract_id=contract.public_id,
+        ):
+            context = await build_payroll_context(
+                self.session, employee, contract, payrun.period_start, payrun.period_end, now=now
+            )
         if context.lop_warning:
             for link in structure.rule_links:
                 rule = link.salary_rule
@@ -433,7 +483,14 @@ class PayrunService(BaseService[Payrun]):
         # Step 4 — THE Phase 3 resolver. Not reimplemented, not wrapped in
         # arithmetic of our own: the list it returns is the payslip.
         try:
-            resolved = resolve_salary_structure(structure, context.seed)
+            with payroll_span(
+                "execute_rules",
+                payrun_id=payrun.public_id,
+                employee_id=employee.public_id,
+                structure_code=structure.code,
+                rule_count=len(structure.rule_links),
+            ):
+                resolved = resolve_salary_structure(structure, context.seed)
         except FormulaEvaluationError as exc:
             # A well-formed structure that cannot evaluate against THIS
             # employee's inputs (a divide by zero on zero worked days, say).
@@ -681,6 +738,7 @@ class PayrunService(BaseService[Payrun]):
             payrun.public_id,
             after_diff={"status": payrun.status.value, "advisory_issues": report["advisory_count"]},
         )
+        payroll_progress(self.session, payrun, stage="validated")
         return {"payrun": await self._reload(payrun.id), "report": report}
 
     async def mark_paid(self, public_id: str, version: int, *, actor_email: str) -> Payrun:
@@ -713,6 +771,7 @@ class PayrunService(BaseService[Payrun]):
         await self.audit(
             actor_email, "MARK_PAYRUN_PAID", payrun.public_id, after_diff={"status": payrun.status.value}
         )
+        payroll_progress(self.session, payrun, stage="paid")
         return await self._reload(payrun.id)
 
     async def enqueue_payslip_delivery(self, public_id: str, *, actor_email: str) -> dict:
@@ -781,6 +840,12 @@ class PayrunService(BaseService[Payrun]):
             "ENQUEUE_PAYSLIP_DELIVERY",
             payrun.public_id,
             after_diff={"task_id": task_id, "payslips": len(payslips)},
+        )
+        # "Queued", not "sent". The worker owns delivery and reports its own
+        # progress; announcing a send here would claim an outcome this
+        # transaction has no knowledge of.
+        delivery_progress(
+            self.session, payrun.public_id, stage="queued", queued=len(payslips)
         )
         return {"payrun_id": payrun.public_id, "task_id": task_id, "payslip_count": len(payslips)}
 

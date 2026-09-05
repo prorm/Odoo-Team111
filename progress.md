@@ -2362,3 +2362,251 @@ What this means precisely:
 No payroll service, model, migration, schema or router was modified. The
 `git diff --stat` against `f4c18e7` touches nothing under `app/services/payroll*`,
 `app/models/` or `alembic/`.
+
+---
+
+## 2026-09-05 — Phase 10: realtime, observability and the read-side intelligence layer (PS §5.4-§5.10)
+
+### Gate check and base
+
+Branched from `phase-9-ai-mcp` (`ab89b74`), not from `origin/dev` — same reason
+Phase 9 gave, and now compounded: Phase 10's brief requires an **offline-sync
+OTel trace**, and offline sync exists only from `phase-8-offline` onward. On
+`cd823a1` that requirement is unsatisfiable. This branch therefore contains
+Phases 5, 7, 8 and 9, and `origin/dev`'s tip is an ancestor of it.
+
+Phase 7's gate was re-confirmed by Phase 9 against code, and Phase 9's own suite
+(**390 passed**) was reproduced before a line of Phase 10 was written.
+
+Phase 9's AI/MCP/context architecture is **preserved, not rewritten**. The one
+place Phase 10 touches it is the hook Phase 9 deliberately left:
+`context_builder.deterministic_signals` prefers `app/services/anomalies.py` when
+it exists and reports which source it used. That branch now takes the engine.
+
+### 1. Realtime — the commit-after-broadcast guarantee, made structural
+
+`app/realtime/events.py`. Services call `queue_event(...)`, which only ever
+appends to `session.info`. Dispatch happens in **exactly one place**:
+`get_db` calls `dispatch_after_commit(session)` immediately after
+`await session.commit()` returns. If the commit raises, control goes to the
+`except` branch, the transaction rolls back, and the staged events die with it.
+
+This is why it is not enough to "remember to broadcast after committing" in each
+router. `get_db` commits AFTER the handler returns, so a `broadcast()` written
+at the end of a handler body runs BEFORE that commit — and would announce a
+check-in that a later constraint violation then erased. Putting the only send
+site after the only commit site makes the wrong order unwritable rather than
+merely discouraged.
+
+Events, per Architecture §8.4: attendance check-in / check-out / correction, new
+time-off request, approval or refusal outcome, payrun computed / validated /
+paid, and bulk-email queued.
+
+**A channel is not an audience.** `Subscriber` carries the principal that opened
+the socket, and `events._visible_to` applies §5's matrix per frame: payroll
+channel to payroll roles only (HR Manager included in the refusal), and an
+Employee sees their own rows and nobody else's. Without it, an Employee
+subscribed to `approvals` would receive every colleague's leave outcome — the
+same disclosure a REST endpoint would be faulted for, travelling over a
+WebSocket.
+
+Every failure is swallowed and logged. A dead browser tab must never turn a
+committed payroll transaction into a 500, and a test asserts exactly that.
+
+### 2. Observability — three traces, and the removal of everything else
+
+`payroll.compute`, `ai.mcp`, `offline.sync`. `telemetry._span` **refuses** any
+other name with a `ValueError`, so a fourth trace cannot be added by accident.
+
+The previous build auto-instrumented FastAPI, SQLAlchemy, Redis and HTTPX.
+**That was removed.** Architecture §8.5 permits "three named traces only… no
+instrumentation is added outside these three", and PRD §5.5 asks for "three
+specific business traces (not a generic showcase)". A span per request and per
+statement is not more observability — it buries the one trace the deliverable is
+about. It also carries a cost this domain cannot ignore: a SQLAlchemy span
+carries the statement, and statements here contain wages.
+
+**Nothing sensitive enters a span.** No prompt, no completion, no amount, no
+employee name. The payroll trace records public ids, counts and statuses; the AI
+trace records task type, tool name, provider, latency and token counts. A test
+captures the attributes a real compute sets and asserts none of them equals a
+monetary value from the payslip.
+
+### 3-7. The read-side features
+
+All five are GETs. `test_phase_10_added_no_write_endpoint` asserts the insights
+router's method set is exactly `{"GET"}`.
+
+- **View Calculation (§5.6)** — `app/services/payslip_explain.py`, built in
+  Phase 9 and exposed here. Frozen inputs, lines in the sequence they ran,
+  category subtotals, persisted totals. The subtotals are shown ALONGSIDE the
+  payslip's own gross and net, never instead of them; a test asserts every
+  category subtotal equals the exact Decimal sum of its lines.
+- **Pay-change comparison (§5.9)** — `pay_comparison.compare_with_previous`.
+  Inputs come from `context_snapshot`, never from today's contract.
+- **Contract Time Machine (§5.8)** — `contract_history`. The period-to-contract
+  resolution **delegates to the payroll engine's own resolver**, and a test
+  asserts the highlighted contract is the one in the payslip's
+  `reference_snapshot`. A client-side date comparison would agree almost always,
+  and the exception would be a screen confidently showing a contract the
+  employee was not paid under.
+- **Validation Firewall (§5.10)** — `app/services/firewall.py`, a read-side
+  layer over `PayrunService.validation_report` adding grouping, employee names
+  and a navigation target per issue. It computes no severity of its own and
+  cannot clear a finding. **Revalidate is the EXISTING `POST /payruns/{id}/validate`**,
+  named in the response rather than reimplemented. An unrecognised warning code
+  falls through to a generic entry rather than being hidden — a blocking issue
+  nobody can see still blocks.
+- **Anomalies (§5.7)** — `app/services/anomalies.py`, seven deterministic
+  checks. Every finding carries `current_value`, `baseline` and a `reason`
+  quoting the threshold it crossed, so a reader can disagree with the threshold
+  instead of having to trust the label. A detector that raises reports itself as
+  a `detector_failed` finding rather than silently removing its category.
+
+### Two anomaly-quality bugs found by running it, and fixed
+
+The demo surfaced both; neither would have failed a test I had written first.
+
+1. **`department_spend_spike` reported "payroll fell 100%" for every department
+   in any month whose payroll had not been paid yet.** Department totals count
+   PAID payslips, so an unrun month reads as zero everywhere. Fixed: if nothing
+   at all was paid in the current period there is no spend to compare and the
+   detector stays silent. If SOME departments were paid and one was not, that
+   one's 100% fall is genuine and is still reported.
+2. **`low_attendance` compared against the WHOLE period.** On the 3rd of the
+   month everyone had "attended 2 of 22 days" and every employee in the company
+   was flagged — every month, until the month ended. Fixed: the denominator and
+   the numerator both stop at today. Days that have not happened are not
+   absences.
+
+Both have regression tests. Observed after the fix, against the seeded data:
+August 2026 returns **0** findings (correct — nothing anomalous), and the
+current month returns 5 real `low_attendance` findings reading "attended 0 of 4
+scheduled days so far (0.00%)", because the seed creates attendance for July and
+August only. That is PRD §7's "at least one real, non-fabricated warning".
+
+### 8. Wiring the layers together
+
+`deterministic_signals` now resolves to `anomalies.detect_all`, and says so in
+the prompt's `fact_sources`. Verified live: the AI anomaly question reports
+`anomalies.detect_all (deterministic Phase 10 anomaly engine)` rather than the
+Phase 9 dashboard fallback.
+
+### 9. UI
+
+Real screens, no static data, no fake charts. `ViewCalculation` (with the
+comparison tab) on the payslip dialog; `ContractTimeMachine` on the employee
+detail page; `FirewallPanel` replacing the flat warning list on the payrun page;
+a new Anomalies page with the live payroll feed indicator. Loading, empty,
+error, AI-unavailable, realtime-unavailable and no-comparison states are all
+handled explicitly — the empty anomaly state says all seven checks ran and none
+fired, because that is a real answer.
+
+`useRealtime` treats a frame as a HINT: it invalidates the relevant query keys
+and lets the normal REST read produce the value. It never writes a frame's
+payload into the cache. If frames became the source of the numbers on screen, a
+dropped frame would leave a stale payroll figure that looked authoritative.
+
+**Two proxy fixes without which realtime would have looked implemented and never
+worked:** `vite.config.ts` needed `ws: true`, and `nginx.conf` needed
+`proxy_http_version 1.1`, the `Upgrade`/`Connection` headers via a
+`$connection_upgrade` map, and a long `proxy_read_timeout` (a WebSocket is idle
+between events; the default 60s would drop every channel a minute after it
+connected).
+
+### 10. Verification — what was actually observed
+
+**Full suite: 417 passed**, zero failures (390 inherited + 27 new). Frontend
+`npm run build` passes `tsc -b` and Vite. `ruff check app/ tests/` reports only
+the 9 pre-existing findings in files this branch did not touch.
+
+`scripts/phase10_demo.py` — **all checks pass**, over real HTTP and a **real
+WebSocket** against a running stack:
+
+```
+[PASS] HR Manager is refused on the payroll channel
+[PASS] An unsigned token is refused
+[PASS] A payrun.computed frame arrived over the socket — computed=1
+[PASS] The payslips the frame announced are already committed and readable
+                                          — 1 readable vs 1 announced
+[PASS] Exactly three traces — payroll.compute, ai.mcp, offline.sync
+[PASS] Frozen inputs present — CONTRACT_WAGE=30000.00, LOP_AMOUNT=4285.71,
+                               UNPAID_LEAVE_DAYS=3.00, WORKED_DAYS=18.00
+       lines: BASIC 30000.00, HRA 12000.00, GROSS 42000.00, PT 200.00,
+              LOP 4285.71, NET 37514.29
+[PASS] HR Manager is refused the calculation view
+[PASS] A real change was detected — net 41800.00 -> 37514.29 (-4285.71)
+[PASS] The period resolves to the contract the payslip was computed against
+[PASS] Revalidate points at the EXISTING validate endpoint
+[PASS] At least one REAL anomaly is surfaced against the seeded data
+[PASS] The AI context uses the Phase 10 anomaly engine, not the fallback
+```
+
+The fourth line is the commit-after-broadcast guarantee observed end to end: not
+"the frame came last", but "the rows the frame describes are readable through
+the API at the moment it arrives".
+
+**Payroll is unchanged.** `test_payroll_computation_is_unchanged_by_phase_10`
+computes a hand-checkable payslip through the real endpoints with realtime and
+tracing active — BASIC 30000.00, HRA 12000.00, GROSS 42000.00, PT 200.00, NET
+41800.00, exact Decimal equality. The `git diff` of `app/services/payroll.py`
+against `ab89b74` contains only `payroll_span(...)` wrappers and
+`payroll_progress(...)`/`delivery_progress(...)` staging calls: no arithmetic, no
+rule, no persisted column. Nothing under `app/models/` or `alembic/` changed —
+**Phase 10 adds no migration.**
+
+Phase 9's `scripts/ai_demo.py` re-run on this branch: all checks still pass.
+
+### Environment note that cost two debugging cycles
+
+A manually started `uvicorn`/`taskiq` in a container does **not** pick up edited
+code (no `--reload`), and `pkill` is absent from the runtime image — so a
+"restart" that silently failed left a stale process serving old code. It
+presented first as a WebSocket 403 (Starlette closes an unmatched websocket
+route, which uvicorn reports as 403) and later as the anomaly engine returning
+findings the API no longer produced. Kill by PID from `/proc` and verify the new
+routes appear in `openapi.json` before trusting a demo run.
+
+### Remaining limitations
+
+- **No AI provider key**, unchanged from Phase 9: narration still reports the
+  clean `ai_unavailable` state. Everything up to and including the prompt is
+  verified; the model's prose is not.
+- **The WebSocket token travels in the query string**, because the browser
+  `WebSocket` constructor cannot set headers. Query strings reach access and
+  proxy logs more readily than headers do; production should pair this with a
+  short-lived socket-scoped ticket rather than the session JWT.
+- **`/realtime/status` counts this process's own connections.** With more than
+  one API replica it is a local view, correct for "is my feed live" and wrong if
+  read as cluster-wide.
+- **Realtime broadcasts are in-process.** A multi-replica deployment needs a
+  Redis pub/sub fan-out; the send site is a single function, so that is a
+  contained change.
+- **The WebSocket route is not covered by an in-suite test**, because a real
+  socket needs a second event loop and the async fixtures are bound to this one.
+  It is covered by `scripts/phase10_demo.py` against a running server, which is
+  where a proxy or upgrade-header misconfiguration would actually show up.
+
+### Files created
+
+- `app/realtime/events.py`, `app/api/v1/routers/realtime.py`
+- `app/api/v1/routers/insights.py`, `app/services/anomalies.py`,
+  `app/services/firewall.py`
+- `tests/test_phase10_insights.py`, `scripts/phase10_demo.py`
+- `frontend/src/types/insights.ts`, `hooks/useInsights.ts`, `hooks/useRealtime.ts`,
+  `components/insights/{ViewCalculation,FirewallPanel,ContractTimeMachine}.tsx`,
+  `routes/insights/AnomaliesPage.tsx`
+
+### Files modified
+
+- `app/core/telemetry.py` (three traces; auto-instrumentation removed),
+  `app/main.py` (routers mounted; `FastAPIInstrumentor` removed)
+- `app/core/database.py` (the single post-commit dispatch site)
+- `app/realtime/ws_manager.py` (per-subscriber visibility)
+- `app/services/{attendance,time_off,payroll,sync}.py` — event staging and trace
+  spans only
+- `app/ai/context_assembly.py`, `app/ai/provider_router.py`,
+  `app/mcp/tool_wrapper.py` — retargeted onto the `ai.mcp` trace
+- `frontend/vite.config.ts`, `frontend/nginx.conf` — WebSocket proxying
+- `frontend/src/router.tsx`, `lib/navigation.ts`, and the payslip, payrun and
+  employee pages

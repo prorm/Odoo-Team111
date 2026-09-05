@@ -67,10 +67,17 @@ def mcp_tool(mcp_instance) -> Callable:
             except Exception as e:
                 return {"status": "error", "error": str(e)}
 
+            # Trace 2 (Architecture §8.5): the MCP half of the AI/MCP
+            # lifecycle. The tool NAME and the outcome, never its arguments —
+            # those carry employee ids, dates and, for a payslip read, the
+            # subject of someone's pay.
+            from app.core.telemetry import ai_span
+
             async with AsyncSessionLocal() as session:
                 try:
-                    result = await fn(session, **kwargs)
-                    await session.commit()
+                    with ai_span("mcp_tool", tool=fn.__name__):
+                        result = await fn(session, **kwargs)
+                        await session.commit()
                     return result
                 except Exception as e:
                     await session.rollback()

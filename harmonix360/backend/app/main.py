@@ -4,7 +4,7 @@ from app.core.config import settings
 from app.core.exceptions import ConflictError, conflict_error_handler
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.core.database import engine
-from app.core.telemetry import setup_telemetry, FastAPIInstrumentor
+from app.core.telemetry import setup_telemetry
 
 # 1. Initialize Sentry & OpenTelemetry tracer BEFORE app initialization
 setup_telemetry(engine=engine)
@@ -15,9 +15,12 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# 2. Instrument FastAPI app instance
-if FastAPIInstrumentor:
-    FastAPIInstrumentor.instrument_app(app)
+# 2. NO blanket FastAPI instrumentation. Architecture §8.5 allows exactly three
+#    named traces — payroll compute, AI/MCP and offline sync — and explicitly
+#    rules out instrumenting every endpoint ("the goal is a demonstrable 'every
+#    payroll calculation is traceable' moment, not blanket tracing"). Auto
+#    instrumenting the app would bury those three in a span per request and
+#    make the payroll trace harder to find, not easier.
 
 from app.api.v1.routers import (
     ai,
@@ -61,11 +64,18 @@ from app.api.v1.routers import payslip_documents
 app.include_router(payslip_documents.router, prefix=settings.API_V1_STR)
 app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 
-# Platform/Intelligence layer — mounted but dormant until Phases 8-10.
-# /sync registers zero entity types (app/services/sync_entities.py) and /ai has
-# no HR prompt families wired to it yet.
+# Platform/Intelligence layer. /sync registers attendance and time-off creation
+# (Phase 8), /ai carries the HR prompt families and the propose-confirm flow
+# (Phase 9), and /insights plus the WebSocket channels are Phase 10.
 app.include_router(sync.router, prefix=settings.API_V1_STR)
 app.include_router(ai.router, prefix=settings.API_V1_STR)
+
+# Phase 10. Every route on `insights` is a GET over already-persisted state
+# (Architecture §8.6); `realtime` carries the WebSocket channels, whose frames
+# are notifications of committed state and never a source of truth (§8.4).
+from app.api.v1.routers import insights, realtime  # noqa: E402
+app.include_router(insights.router, prefix=settings.API_V1_STR)
+app.include_router(realtime.router, prefix=settings.API_V1_STR)
 
 @app.get("/health")
 async def health_check():
