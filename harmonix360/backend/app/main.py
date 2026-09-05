@@ -57,6 +57,8 @@ app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(time_off.router, prefix=settings.API_V1_STR)
 app.include_router(salary.router, prefix=settings.API_V1_STR)
 app.include_router(payroll.router, prefix=settings.API_V1_STR)
+from app.api.v1.routers import payslip_documents
+app.include_router(payslip_documents.router, prefix=settings.API_V1_STR)
 app.include_router(dashboard.router, prefix=settings.API_V1_STR)
 
 # Platform/Intelligence layer — mounted but dormant until Phases 8-10.

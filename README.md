@@ -154,6 +154,68 @@ for the retained local rows and verification results.
 
 ---
 
+## Payslip preview, PDF and email (Phase 5)
+
+Open **View calculation** on a payslip to see the shared document preview.
+**Print Payslip** downloads a PDF for validated or paid slips. Computed slips
+can be previewed, but cannot be printed. The Jinja template at
+`harmonix360/backend/templates/payslip.html.j2` supplies both the iframe preview
+and WeasyPrint PDF, including the same embedded fonts and every stored salary
+line in sequence. Loss of Pay is included. Warnings remain outside the document
+in the application; document rendering uses historical snapshots and never
+recalculates salary from a current contract.
+
+On a paid Payrun, **Send payslips** uses the existing Phase 4 enqueue endpoint.
+The `send_payslips` Taskiq dispatcher publishes one `deliver_payslip` job per
+employee. Migration 019 stores delivery state separately from payroll history.
+The Payrun table polls pending/sent/failed status and shows individual failures.
+Sending again skips sent rows and retries pending/failed rows. `sent` means
+SMTP acceptance, not confirmed inbox delivery. Duplicate concurrent child jobs
+are serialized; SMTP cannot guarantee exactly-once delivery across a worker
+crash after acceptance but before the database commit. Use Send payslips to
+retry a pending job left behind by a stopped worker.
+
+New authenticated endpoints (Admin, HR Payroll Manager, HR Payroll User):
+
+- `GET /api/v1/payslips/{id}/preview`: shared HTML.
+- `GET /api/v1/payslips/{id}/pdf`: downloadable PDF; validated/paid only.
+- `GET /api/v1/payruns/{id}/deliveries`: per-employee delivery state.
+
+Rebuild with `docker compose up --build` to install WeasyPrint's Pango/font
+dependencies and run migration 019. The worker imports
+`app.jobs.tasks.payroll_jobs` and waits for backend migration/seed startup.
+MailHog is included in both Compose profiles: SMTP on localhost:1025 and its
+mailbox at [localhost:8025](http://localhost:8025). Leave `SMTP_HOST` unset for
+the defaults (host process: localhost; Compose: mailhog). Optional settings
+are `SMTP_PORT`, `SMTP_FROM_ADDRESS`, `SMTP_USERNAME`, `SMTP_PASSWORD` and
+`SMTP_STARTTLS`. Native backend runs also need
+[WeasyPrint's system dependencies](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation)
+and `PAYSLIP_FONT_DIR` containing `DejaVuSans.ttf` and `DejaVuSans-Bold.ttf`;
+the backend Docker image supplies both. For a host worker, run:
+
+```bash
+uv run taskiq worker app.jobs.broker:broker app.jobs.tasks.payroll_jobs --max-async-tasks 4
+```
+
+The opt-in `scripts/verify_payslip_delivery.py` acceptance harness requires
+dev dependencies and a **separate migrated/seeded demo database**. With its API
+running, `python -m scripts.verify_payslip_delivery prepare` creates three real
+paid LOP payslips and writes PDF/HTML plus fixture IDs under ignored
+`backend/artifacts/`. Start `smtp-proxy` in another terminal, point only the
+demo worker at `SMTP_HOST=127.0.0.1 SMTP_PORT=1026`, then click Send payslips and
+run `verify`. The proxy returns a real SMTP 550 for one nonexistent test
+mailbox and forwards the other two to MailHog. This is explicit fault injection:
+MailHog itself accepts all mailboxes. `verify` checks two accepted messages,
+one failed employee, and an actual LOP PDF attachment in each accepted message.
+Set `VERIFY_API_URL`, `MAILHOG_HOST`, and `MAILHOG_URL` when their defaults
+(API localhost:8000; MailHog host.docker.internal:1025/8025) do not match your
+environment. The harness is never called by application startup or normal seed.
+
+The previously documented migration-018 legacy 409 policy still applies to
+preview, print and email. No restoration or live-data backfill was added.
+
+---
+
 ## Five things worth knowing before you change anything
 
 **Two active contracts can never overlap.** Enforced by a Postgres `EXCLUDE`

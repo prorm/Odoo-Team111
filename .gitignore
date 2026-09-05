@@ -23,6 +23,8 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .ruff_cache/
+# Local PDF/email acceptance fixtures and screenshots (synthetic demo data).
+harmonix360/backend/artifacts/
 *.egg-info/
 
 # Node / Frontend Build & Dependencies

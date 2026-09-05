@@ -13,13 +13,13 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
       },
       // Offline reachability check (src/lib/reachability.ts) pings /health
       // directly, outside the /api/v1 prefix — needs its own proxy entry.
       '/health': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8000',
         changeOrigin: true,
       },
     },

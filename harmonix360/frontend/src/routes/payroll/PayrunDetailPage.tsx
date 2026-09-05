@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDeliveryStatuses } from '@/hooks/usePayslipDocuments';
 import { Link, useParams } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
@@ -44,6 +45,7 @@ import { STATUS_VARIANT } from './status';
 export function PayrunDetailPage() {
   const { payrunId } = useParams();
   const payrun = usePayrun(payrunId);
+  const deliveries = useDeliveryStatuses(payrunId, payrun.data?.status === 'paid');
   const payslips = usePayrunPayslips(payrunId);
   const validation = usePayrunValidation(payrunId, payrun.data?.status !== 'draft');
 
@@ -141,6 +143,11 @@ export function PayrunDetailPage() {
       <ErrorMessage
         error={compute.error ?? validate.error ?? markPaid.error ?? send.error}
       />
+      <ErrorMessage error={deliveries.error} />
+      {run.status === 'paid' && <p className="text-xs text-slate-400">
+        Email status updates automatically. Sent means accepted by the mail server.
+        Send payslips retries pending or failed deliveries and skips those already sent.
+      </p>}
 
       {send.data && (
         <p className="rounded-lg border border-emerald-800/50 bg-emerald-950/40 p-3 text-sm text-emerald-200">
@@ -230,11 +237,13 @@ export function PayrunDetailPage() {
                 <TableHead className="text-right">Gross</TableHead>
                 <TableHead className="text-right">Net</TableHead>
                 <TableHead>Warnings</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
               {(payslips.data?.items ?? []).map((payslip) => {
+                const delivery = deliveries.data?.items.find((item) => item.payslip_id === payslip.id);
                 const blockingCount = payslip.warnings.filter(
                   (warning) => warning.severity === 'blocking'
                 ).length;
@@ -264,6 +273,12 @@ export function PayrunDetailPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
+                      {delivery?.queued ? <div className="text-left text-xs">
+                        <span className={delivery.status === 'failed' ? 'text-rose-300' : delivery.status === 'sent' ? 'text-emerald-300' : 'text-slate-300'}>{delivery.status}</span>
+                        {delivery.error && <p className="max-w-xs text-rose-300">{delivery.error}</p>}
+                      </div> : <span className="text-xs text-slate-500">Not queued</span>}
+                    </TableCell>
+                    <TableCell className="text-right">
                       <Button variant="ghost" size="sm" onClick={() => setOpen(payslip)}>
                         View calculation
                       </Button>
@@ -273,7 +288,7 @@ export function PayrunDetailPage() {
               })}
               {(payslips.data?.items.length ?? 0) === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="p-6 text-center text-sm text-slate-400">
+                  <TableCell colSpan={7} className="p-6 text-center text-sm text-slate-400">
                     No payslips yet — compute this payrun to produce them.
                   </TableCell>
                 </TableRow>

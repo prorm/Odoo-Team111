@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Payslip {{ slip.id }}</title>
+  <style>
+    @font-face { font-family: "Payslip Sans"; src: url("data:font/ttf;base64,{{ font_regular }}"); font-weight: 400; }
+    @font-face { font-family: "Payslip Sans"; src: url("data:font/ttf;base64,{{ font_bold }}"); font-weight: 700; }
+    @page { size: A4; margin: 18mm; }
+    * { box-sizing: border-box; }
+    body { font-family: "Payslip Sans", sans-serif; font-size: 10pt; color: #18342f; margin: 0; background: white; }
+    .document { max-width: 174mm; margin: 0 auto; padding: 0; }
+    header { border-bottom: 3px solid #286b58; padding-bottom: 16px; margin-bottom: 22px; }
+    .brand { font-size: 11pt; font-weight: bold; color: #286b58; letter-spacing: 1px; }
+    h1 { font-size: 25pt; margin: 8px 0; }
+    .muted { color: #64756f; font-size: 9pt; }
+    .details { width: 100%; margin-bottom: 20px; }
+    .details td { padding: 5px 0; vertical-align: top; width: 50%; }
+    .label { font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; color: #64756f; }
+    .value { margin: 5px 0; font-weight: bold; overflow-wrap: anywhere; }
+    table.lines { border-collapse: collapse; width: 100%; font-size: 9pt; }
+    .lines th { padding: 10px 6px; background: #edf4f0; text-align: left; border-bottom: 1px solid #b9ccc3; }
+    .lines td { padding: 12px 6px; border-bottom: 1px solid #e0e8e3; overflow-wrap: anywhere; }
+    .lines .amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .lines .code { font-size: 7.5pt; color: #64756f; }
+    .lines tr { break-inside: avoid; }
+    thead { display: table-header-group; }
+    .totals { margin-top: 22px; padding: 16px; background: #edf4f0; break-inside: avoid; }
+    .totals table { width: 100%; }
+    .totals td { padding: 4px; }
+    .net { font-size: 16pt; font-weight: bold; }
+    footer { border-top: 1px solid #e0e8e3; padding-top: 12px; margin-top: 26px; }
+    @media screen { body { padding: 22px; } }
+  </style>
+</head>
+<body><main class="document">
+  <header><div class="brand">PeoplePay360</div><h1>Payslip</h1>
+    <div class="muted">{{ slip.payrun.name }} · {{ slip.payrun.period_start }} to {{ slip.payrun.period_end }}</div>
+  </header>
+  <table class="details"><tr>
+    <td><div class="label">Employee</div><div class="value">{{ slip.employee.first_name }} {{ slip.employee.last_name }}</div><span class="muted">{{ slip.employee.id }}</span></td>
+    <td><div class="label">Payslip reference</div><div class="value">{{ slip.id }}</div></td>
+  </tr><tr>
+    <td><div class="label">Contract wage</div><div class="value">{{ slip.contract.wage | money }}</div><span class="muted">{{ slip.contract.id }}</span></td>
+    <td><div class="label">Worked days</div><div class="value">{{ slip.worked_days }}</div></td>
+  </tr></table>
+  <table class="lines"><thead><tr><th>#</th><th>Rule</th><th>Code</th><th>Category</th><th class="amount">Amount</th></tr></thead><tbody>
+  {% for line in slip.lines %}
+    <tr data-line-code="{{ line.code }}"><td>{{ line.sequence }}</td><td>{{ line.name }}</td><td class="code">{{ line.code }}</td><td>{{ line.category.value | title }}</td><td class="amount">{{ line.amount | money }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  <section class="totals"><table><tr><td>Gross pay</td><td style="text-align:right">{{ slip.gross_amount | money }}</td></tr><tr class="net"><td>Net pay</td><td style="text-align:right">{{ slip.net_amount | money }}</td></tr></table></section>
+  <footer class="muted">Pay period: {{ slip.payrun.period_start }} – {{ slip.payrun.period_end }}<br>PeoplePay360 · {{ slip.id }}</footer>
+</main></body></html>

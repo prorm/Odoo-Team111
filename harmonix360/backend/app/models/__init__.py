@@ -24,6 +24,7 @@ from app.models.contract import Contract
 from app.models.attendance import Attendance
 from app.models.time_off import TimeOffAllocation, TimeOffRequest, TimeOffType
 from app.models.payroll import Payrun, PayrunEmployee, Payslip, PayslipLine
+from app.models.payslip_delivery import PayslipDelivery
 
 __all__ = [
     "Base",
@@ -51,4 +52,5 @@ __all__ = [
     "PayrunEmployee",
     "Payslip",
     "PayslipLine",
+    "PayslipDelivery",
 ]
