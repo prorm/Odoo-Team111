@@ -13,7 +13,6 @@ docker-compose.override.yml
 
 # Vendored skill packs — reference material, not product source
 Odoo Skills/
-"Odoo Skills"/
 
 # Python / Virtual Environments
 .venv/
