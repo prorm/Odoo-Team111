@@ -19,7 +19,6 @@ from app.models.contract import Contract
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.enums import UserRole
-from app.models.user import User
 from app.models.working_schedule import ScheduleLine, WorkingSchedule
 from app.repositories.hr import DepartmentRepository
 
@@ -129,6 +128,19 @@ async def cleanup_schedules():
         ).scalars().all()
         if new_ids:
             await s.execute(delete(ScheduleLine).where(ScheduleLine.schedule_id.in_(new_ids)))
+            # Clear the references first — an Employee's default schedule and a
+            # Contract's override both FK into here, and pytest may dispose this
+            # fixture before the one that deletes those rows.
+            await s.execute(
+                Employee.__table__.update()
+                .where(Employee.default_schedule_id.in_(new_ids))
+                .values(default_schedule_id=None)
+            )
+            await s.execute(
+                Contract.__table__.update()
+                .where(Contract.working_schedule_id.in_(new_ids))
+                .values(working_schedule_id=None)
+            )
             await s.execute(delete(WorkingSchedule).where(WorkingSchedule.id.in_(new_ids)))
         await s.commit()
 

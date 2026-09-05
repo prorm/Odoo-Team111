@@ -29,6 +29,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.contract import Contract
 from app.models.employee import Employee
@@ -46,6 +47,16 @@ logger = logging.getLogger("harmonix360.services.contract")
 
 #: Postgres exclusion_violation — what the non-overlap constraint raises.
 EXCLUSION_VIOLATION_SQLSTATE = "23P01"
+
+#: Everything ContractResponse renders. Loaded eagerly on every read path so a
+#: response never triggers a lazy load from inside Pydantic's synchronous
+#: attribute access.
+_RESPONSE_LOADS = (
+    selectinload(Contract.employee),
+    selectinload(Contract.department),
+    selectinload(Contract.salary_structure),
+    selectinload(Contract.working_schedule),
+)
 
 
 class ContractService(BaseService[Contract]):
@@ -76,6 +87,7 @@ class ContractService(BaseService[Contract]):
         stmt = (
             select(Contract)
             .where(*conditions)
+            .options(*_RESPONSE_LOADS)
             # Most recent contract first: a contract list is read to answer
             # "what are they on now?", and the answer is at the top.
             .order_by(Contract.start_date.desc(), Contract.id.desc())
@@ -372,9 +384,18 @@ class ContractService(BaseService[Contract]):
                 contract.working_schedule_id = None
 
     async def _reload(self, internal_id: int) -> Contract:
+        """Re-read with the response's relationships eagerly loaded.
+
+        Spelled out rather than left to the model's `lazy="selectin"` defaults:
+        `populate_existing=True` re-expires relationship attributes, so
+        Pydantic's synchronous read of `contract.employee` afterwards would be a
+        lazy load inside an async context — a `MissingGreenlet`, surfacing as a
+        500 on an otherwise successful write.
+        """
         stmt = (
             select(Contract)
             .where(Contract.id == internal_id)
+            .options(*_RESPONSE_LOADS)
             .execution_options(populate_existing=True)
         )
         return (await self.session.execute(stmt)).scalar_one()

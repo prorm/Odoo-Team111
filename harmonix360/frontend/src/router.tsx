@@ -1,7 +1,13 @@
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 
 import { AppShell } from './components/layout/AppShell';
+import { RequireAuth } from './routes/RequireAuth';
+import { LoginPage } from './routes/LoginPage';
 import { SectionStub } from './routes/SectionStub';
+import { ContractsPage } from './routes/contracts/ContractsPage';
+import { EmployeeDetailPage } from './routes/employees/EmployeeDetailPage';
+import { EmployeesPage } from './routes/employees/EmployeesPage';
+import { SchedulesPage } from './routes/schedules/SchedulesPage';
 
 /**
  * Routes for PS B1's top navigation: Employees, Contracts, Attendance,
@@ -17,19 +23,21 @@ import { SectionStub } from './routes/SectionStub';
  * would leave two screens competing to be "home".
  */
 const router = createBrowserRouter([
+  { path: '/login', element: <LoginPage /> },
   {
     path: '/',
-    element: <AppShell />,
+    element: (
+      <RequireAuth>
+        <AppShell />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Navigate to="/employees" replace /> },
-      {
-        path: 'employees',
-        element: <SectionStub name="Employees" features="A1 Employee Master, B2 Employee Form hub" phase="Phase 1" />,
-      },
-      {
-        path: 'contracts',
-        element: <SectionStub name="Contracts" features="A2 Contract Management" phase="Phase 1" />,
-      },
+      { path: 'employees', element: <EmployeesPage /> },
+      // Before ':employeeId', or "schedules" would be read as an employee id.
+      { path: 'employees/schedules', element: <SchedulesPage /> },
+      { path: 'employees/:employeeId', element: <EmployeeDetailPage /> },
+      { path: 'contracts', element: <ContractsPage /> },
       {
         path: 'attendance',
         element: <SectionStub name="Attendance" features="B3 Check In/Out, Worked Hours, corrections" phase="Phase 2" />,

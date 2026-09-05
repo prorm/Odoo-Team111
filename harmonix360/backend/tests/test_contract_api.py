@@ -322,3 +322,52 @@ async def test_an_employee_cannot_read_their_own_contract_through_this_route(cli
 
     resp = await client.get(f"/api/v1/contracts/{created.json()['id']}", headers=own)
     assert resp.status_code == 403, resp.text
+
+
+async def test_the_response_exposes_related_records_as_public_ids_never_integers(
+    client, cleanup_employees, cleanup_schedules
+):
+    """Regression: ContractResponse once declared `working_schedule_id: str`
+    over the model's INTEGER foreign key, so any contract that referenced a
+    schedule 500-ed on serialisation — a failure no test caught because none of
+    them set that field, and the ordinary create path never touches it.
+
+    Two things are asserted: that it serialises at all, and that what comes back
+    is a prefixed public_id. The integer primary key is sequential and is not
+    usable in any other request, so returning one would be both a leak and dead
+    weight.
+    """
+    employee = await _employee(client)
+
+    schedule = await client.post(
+        "/api/v1/working-schedules/",
+        json={
+            "name": "Contract override 35h",
+            "lines": [
+                {
+                    "day_of_week": "monday",
+                    "start_time": "09:00:00",
+                    "end_time": "17:00:00",
+                    "break_minutes": 60,
+                }
+            ],
+        },
+        headers=HR,
+    )
+    assert schedule.status_code == 201, schedule.text
+    schedule_id = schedule.json()["id"]
+
+    created = await _create(client, employee, working_schedule_id=schedule_id)
+    assert created.status_code == 201, created.text
+
+    body = created.json()
+    assert body["working_schedule"]["id"] == schedule_id
+    assert body["working_schedule"]["name"] == "Contract override 35h"
+    # No raw FK integers anywhere in the payload.
+    assert "working_schedule_id" not in body
+    assert "salary_structure_id" not in body
+    assert body["salary_structure"] is None
+
+    listed = await client.get("/api/v1/contracts/", params={"employee_id": employee}, headers=HR)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"][0]["working_schedule"]["id"] == schedule_id

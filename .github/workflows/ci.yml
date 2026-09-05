@@ -15,11 +15,11 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: harmonix360
+          POSTGRES_DB: peoplepay360
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d harmonix360"
+          --health-cmd "pg_isready -U postgres -d peoplepay360"
           --health-interval 3s
           --health-timeout 3s
           --health-retries 10
@@ -45,12 +45,14 @@ jobs:
       # Mirrors docker-compose.yml's role split: migrations run as the
       # postgres superuser (001_initial_schema.py creates harmonix360_app),
       # the app itself connects as the lower-privileged harmonix360_app role.
-      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@localhost:5432/harmonix360
-      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/harmonix360
+      # That split is what makes the audit-log immutability test meaningful —
+      # running everything as a superuser would skip it silently.
+      DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@localhost:5432/peoplepay360
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/peoplepay360
       REDIS_URL: redis://localhost:6379/0
-      HASHID_SALT: harmonix360-ci-salt
-      JWT_SECRET: harmonix360-ci-jwt-secret
-      MCP_AGENT_API_KEY: harmonix360-ci-mcp-key
+      HASHID_SALT: peoplepay360-ci-salt
+      JWT_SECRET: peoplepay360-ci-jwt-secret
+      MCP_AGENT_API_KEY: peoplepay360-ci-mcp-key
       ENVIRONMENT: development
       # No SigNoz collector in CI. OTEL_ENABLED=false skips tracer setup
       # entirely rather than exporting spans at a host that isn't there —
@@ -74,6 +76,10 @@ jobs:
       - name: Run database migrations (alembic upgrade head)
         run: uv run alembic upgrade head
 
+      - name: Seed demo data
+        # The auth suite needs the five demo logins, and the seed is idempotent.
+        run: uv run python -m app.seed
+
       - name: Lint (ruff) — report only, not a merge gate
         run: uv run ruff check . || true
 
@@ -81,4 +87,84 @@ jobs:
         run: uv run black --check . || true
 
       - name: Run test suite
+        # Exercises the real Postgres EXCLUDE constraint and the real advisory
+        # lock. Neither can run against SQLite, which is why this job carries a
+        # database service rather than mocking one.
         run: uv run pytest -v
+
+  frontend:
+    name: Frontend (typecheck, build)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: harmonix360/frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: harmonix360/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        # `npm run build` is `tsc -b && vite build`, so a type error fails here.
+        # This job exists because the frontend is built inside its Dockerfile:
+        # without it, a type error would first surface as a failed
+        # `docker compose up --build`, which is a slow and confusing place to
+        # find one.
+        run: npm run build
+
+  compose:
+    name: Docker Compose (both profiles)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Core profile builds and starts
+        # The profile Phases 1-7 develop against. Needs no AI keys.
+        run: |
+          docker compose up --build -d
+          timeout 180 sh -c 'until curl -sf http://localhost:8000/health; do sleep 3; done'
+          curl -sf http://localhost:3000/ > /dev/null
+          docker compose ps
+
+      - name: Core profile serves a real request end to end
+        run: |
+          TOKEN=$(curl -sf -X POST http://localhost:8000/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"hr.manager@peoplepay360.com","password":"hrmanager123"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+          curl -sf http://localhost:8000/api/v1/employees/ -H "Authorization: Bearer $TOKEN" > /dev/null
+          # The RBAC denial that matters most: HR Manager has no payroll access.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/v1/payruns/ \
+            -H "Authorization: Bearer $TOKEN")
+          test "$code" = "403" || { echo "expected 403 for hr_manager on /payruns, got $code"; exit 1; }
+
+      - name: Advanced profile builds and starts
+        # Proves the dormant Platform/Intelligence layer still works — the
+        # check that would otherwise only happen at Phase 8, long after a
+        # break was introduced.
+        run: |
+          docker compose --profile advanced up --build -d
+          timeout 180 sh -c 'until curl -sf http://localhost:8000/health; do sleep 3; done'
+          docker compose --profile advanced ps
+          # The MCP server answers on its own port (400 is the correct reply to
+          # a bare GET on a Streamable HTTP endpoint — it means it is listening
+          # and speaking MCP, not that it is broken).
+          timeout 60 sh -c 'until curl -s -o /dev/null http://localhost:8100/mcp; do sleep 3; done'
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose --profile advanced logs --tail 80
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile advanced down -v

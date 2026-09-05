@@ -1,6 +1,7 @@
 import * as React from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Bell, Building2, ChevronRight, Menu, Search, Wallet, X } from 'lucide-react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Bell, Building2, ChevronRight, LogOut, Menu, Search, Wallet, X } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { ConflictModal } from '@/components/ConflictModal';
 import { OfflineBanner } from '@/components/OfflineBanner';
@@ -8,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ToastProvider } from '@/components/ui/toast';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { clearToken } from '@/lib/auth';
 import { visibleNavItems } from '@/lib/navigation';
 import { ROLE_LABELS } from '@/types/enums';
 
@@ -22,6 +24,8 @@ function initials(name: string | undefined): string {
 
 export function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const { data: user } = useCurrentUser();
 
@@ -95,22 +99,41 @@ export function AppShell() {
           </nav>
 
           <div className="p-4 border-t border-slate-800/80 bg-slate-950/40">
-            <div className="flex items-center space-x-3 overflow-hidden">
-              <div className="h-8 w-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 font-semibold text-xs flex-shrink-0">
-                {initials(user?.name)}
-              </div>
-              <div className="truncate">
-                <div className="text-xs font-medium text-slate-200 truncate">
-                  {user?.email ?? 'Not signed in'}
+            <div className="flex items-center justify-between gap-2 overflow-hidden">
+              <div className="flex items-center space-x-3 overflow-hidden">
+                <div className="h-8 w-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 font-semibold text-xs flex-shrink-0">
+                  {initials(user?.name)}
                 </div>
-                {user?.role && (
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <Badge variant="default" className="text-[9px] px-1.5 py-0">
-                      {ROLE_LABELS[user.role] ?? user.role}
-                    </Badge>
+                <div className="truncate">
+                  <div className="text-xs font-medium text-slate-200 truncate">
+                    {user?.email ?? 'Not signed in'}
                   </div>
-                )}
+                  {user?.role && (
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <Badge variant="default" className="text-[9px] px-1.5 py-0">
+                        {ROLE_LABELS[user.role] ?? user.role}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Sign out"
+                title="Sign out"
+                onClick={() => {
+                  clearToken();
+                  // Clear, not invalidate: every cached row was fetched under
+                  // the previous role, and none of it should be visible for
+                  // even a frame under the next one.
+                  queryClient.clear();
+                  navigate('/login', { replace: true });
+                }}
+                className="flex-shrink-0 text-slate-400 hover:text-slate-100"
+              >
+                <LogOut className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         </aside>
