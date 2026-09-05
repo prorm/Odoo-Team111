@@ -16,4 +16,7 @@ export interface UserResponse {
   name: string;
   role: UserRole;
   tenant_id: string;
+  /** The Employee record this login owns, when one exists. Null for a
+   *  payroll-only or admin login with no HR record of their own. */
+  employee_id: string | null;
 }

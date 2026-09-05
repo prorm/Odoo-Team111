@@ -106,7 +106,7 @@ async def test_audit_log_write_and_query_round_trip(session):
 
     await AuditLogger.log_mutation(
         session=session,
-        actor="tests@peoplepay360.local",
+        actor="tests@peoplepay360.com",
         action="CREATE_EMPLOYEE",
         entity="Employee",
         entity_id=entity_id,
@@ -117,7 +117,7 @@ async def test_audit_log_write_and_query_round_trip(session):
 
     entries = await AuditQueryRepository(session).get_by_entity_id(entity_id, limit=10)
     assert len(entries) == 1
-    assert entries[0].actor == "tests@peoplepay360.local"
+    assert entries[0].actor == "tests@peoplepay360.com"
     assert entries[0].action == "CREATE_EMPLOYEE"
     assert entries[0].after_diff == {"status": "active"}
 
@@ -196,7 +196,7 @@ async def test_idempotency_key_replays_the_cached_response(client):
     the property under test.
     """
     key = f"test-{uuid.uuid4().hex}"
-    body = {"email": "admin@harmonix360.com", "password": "admin123"}
+    body = {"email": "hr.manager@peoplepay360.com", "password": "hrmanager123"}
 
     first = await client.post("/api/v1/auth/login", json=body, headers={"Idempotency-Key": key})
     assert first.status_code == 200, first.text
