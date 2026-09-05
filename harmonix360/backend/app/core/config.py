@@ -6,7 +6,7 @@ from pydantic import Field
 # The .env lives at the REPO ROOT, but local commands run from
 # harmonix360/backend/ (alembic, pytest, uvicorn, the verify_* scripts). A bare
 # env_file=".env" resolves against the CWD, so it silently found nothing and
-# every setting fell back to its default — including DATABASE_URL's
+# every setting fell back to its default â€” including DATABASE_URL's
 # "@postgres:5432", a hostname that only resolves inside docker compose. Anchor
 # the path to this file instead so it works from any working directory.
 #
@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(default="http://signoz-otel-collector:4318", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     SENTRY_DSN: str = Field(default="", validation_alias="SENTRY_DSN")
+    # Off by default: SigNoz only runs under `docker compose --profile advanced`
+    # (Architecture §12), so the core profile, pytest and CI would otherwise
+    # spend every request retrying an OTLP export against a host that isn't
+    # there. Set OTEL_ENABLED=true in the advanced profile.
+    OTEL_ENABLED: bool = Field(default=False, validation_alias="OTEL_ENABLED")
+    # Span-to-stdout, for debugging the tracer itself. Never on in CI: it
+    # writes to a stream pytest has already closed by teardown.
+    OTEL_CONSOLE_EXPORT: bool = Field(default=False, validation_alias="OTEL_CONSOLE_EXPORT")
 
     # MCP Server
     MCP_AGENT_API_KEY: str = Field(default="harmonix360-mcp-dev-key", validation_alias="MCP_AGENT_API_KEY")

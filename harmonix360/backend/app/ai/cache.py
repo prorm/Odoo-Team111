@@ -14,12 +14,27 @@ from app.core.config import settings
 
 logger = logging.getLogger("harmonix360.ai.cache")
 
-# Per-task-type TTLs in seconds
+# Per-task-type TTLs in seconds.
+#
+# The keys are the HR/Payroll prompt families from Architecture §8.1; the
+# AssetFlow ones (transfer_decision, booking_decision, asset_analysis) went with
+# their domain in Phase 0 step 1. An unrecognised task_type falls back to
+# "general", so a Phase 9 prompt family missing from this table still caches —
+# it just doesn't get a tuned TTL.
 TASK_TYPE_TTLS: dict[str, int] = {
-    "transfer_decision": 300,   # 5 min — decisions are context-sensitive
-    "booking_decision": 300,
+    # A payslip is immutable once its payrun is validated, so its narration can
+    # be cached hard. The deterministic rule engine — never the cache, and never
+    # the AI — is what produced the numbers being narrated (Architecture §7/§10).
+    "payslip_explanation": 3600,
+    # Department variance and trends move only when a payrun does.
+    "payroll_variance": 1800,
+    # Anomaly narration sits on top of deterministic checks whose inputs change
+    # as HR fixes the underlying records, so keep it short.
+    "anomaly_narration": 300,
+    # "Who is blocking payroll" / "summarize pending HR actions" answer a live
+    # worklist; a stale answer there is actively misleading.
+    "pending_actions": 120,
     "general": 600,             # 10 min default
-    "asset_analysis": 600,
 }
 
 

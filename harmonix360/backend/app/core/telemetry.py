@@ -1,7 +1,7 @@
 """
 OpenTelemetry & Sentry Observability Configuration for Harmonix360.
 
-Architecture ref: Section 7 — Observability
+Architecture ref: Section 7 â€” Observability
 1. OpenTelemetry auto-instrumentation for FastAPI, SQLAlchemy, Redis, and HTTPX.
 2. OTLP Exporter targeting SigNoz.
 3. Sentry SDK integration for exception tracking with breadcrumbs.
@@ -50,6 +50,14 @@ def setup_telemetry(app=None, engine=None):
     """
     global _tracer_provider
 
+    # 0. Both halves are opt-in. Observability is Platform/Intelligence layer
+    #    and is wired up in Phase 10 (Architecture §8.5); until then — and in
+    #    every core-profile / pytest / CI run — there is no collector to export
+    #    to, and a tracer that retries a dead endpoint on every span turns a
+    #    fast test suite into a slow one and buries real output in noise.
+    if not settings.OTEL_ENABLED:
+        logger.debug("OpenTelemetry disabled (OTEL_ENABLED=false); skipping tracer setup.")
+
     # 1. Initialize Sentry if DSN configured
     if settings.SENTRY_DSN:
         sentry_sdk.init(
@@ -63,8 +71,11 @@ def setup_telemetry(app=None, engine=None):
         )
         logger.info("Sentry SDK initialized with DSN.")
 
+    if not settings.OTEL_ENABLED:
+        return
+
     # 2. Setup OpenTelemetry Resource & TracerProvider
-    resource = Resource.create(attributes={SERVICE_NAME: "harmonix360-backend"})
+    resource = Resource.create(attributes={SERVICE_NAME: "peoplepay360-backend"})
     _tracer_provider = TracerProvider(resource=resource)
 
     # OTLP Exporter (HTTP endpoint for SigNoz collector)
@@ -72,8 +83,8 @@ def setup_telemetry(app=None, engine=None):
     otlp_exporter = OTLPSpanExporter(endpoint=endpoint)
     _tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
-    # Also log spans to console in dev mode
-    _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+    if settings.OTEL_CONSOLE_EXPORT:
+        _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 
     trace.set_tracer_provider(_tracer_provider)
     logger.info("OpenTelemetry TracerProvider initialized targeting %s", endpoint)

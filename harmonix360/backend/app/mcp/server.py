@@ -1,42 +1,56 @@
 """
-FastMCP server exposing Harmonix360 domain actions as tools.
+FastMCP server exposing PeoplePay360 capabilities as agent tools.
 
-Architecture ref: Section 6 — "Run FastMCP as a separate process from the main
-FastAPI app using Streamable HTTP transport."
+Architecture ref: §8.2 — FastMCP, Streamable HTTP transport, run as a separate
+process from the main FastAPI app. Library is FastMCP (decorator-based), NOT
+the low-level mcp SDK and NOT fastapi_mcp. Tools are hand-written, never
+auto-converted from the OpenAPI spec via `FastMCP.from_fastapi()`.
 
-Library: FastMCP (pip install fastmcp) — decorator-based, NOT the low-level mcp SDK,
-NOT fastapi_mcp.
+STATUS: DORMANT UNTIL PHASE 9.
+--------------------------------
+The server, its auth model, the @mcp_tool plumbing (app/mcp/tool_wrapper.py)
+and its Compose service are all retained — they are Platform/Intelligence
+layer, not domain content. What was removed in Phase 0 step 2 is the AssetFlow
+TOOL SET, which called services that no longer exist:
 
-Hand-written tools (NOT auto-generated from OpenAPI spec):
-1. create_booking — create a resource booking
-2. check_asset_status — check an asset's current status
-3. approve_transfer — human override path for transfer approval
-4. query_audit_trail — query the immutable audit log
-5. create_note — trivial tool proving @mcp_tool needs no bespoke plumbing per tool
+    create_booking, check_asset_status, approve_transfer, create_note
 
-Auth: MCP_AGENT_API_KEY validated per request, NOT user JWT.
-Every MCP tool call is audit-logged with actor="ai-agent" (Section 6).
+`query_audit_trail` survives unchanged: it reads the domain-agnostic audit log
+through AuditQueryRepository and named no deleted entity, so it is also the
+one live proof that the transport, the API-key check, the session/commit
+wrapper and the audit write still work end to end with zero domain entities
+registered.
 
-The open-session / validate-key / commit-or-rollback / error-envelope shape that
-used to be hand-repeated in every tool now lives in app/mcp/tool_wrapper.py's
-@mcp_tool(mcp) decorator — each tool body below is entity-specific logic only.
+Phase 9 adds the HR/Payroll tool set from Architecture §8.2:
 
-NOTE: semantic_search_assets is NOT implemented yet — pgvector is Week 3.
+  Read tools:   get_employee, get_employee_contracts, get_attendance_summary,
+                get_leave_balance, get_pending_time_off, get_payrun_summary,
+                get_payslip, explain_payslip, get_payroll_warnings,
+                get_department_payroll, get_payroll_trends,
+                find_payroll_anomalies, find_contract_conflicts
+  Action tools: create_time_off_request, approve_time_off_request,
+                correct_attendance, create_payrun, request_payroll_validation
+
+Every one of those must import and call the same `app/services/*` method the
+REST router calls — Architecture §9, "one path to the database". No tool may
+execute raw SQL, reimplement contract-overlap or allocation-deduction logic,
+or bypass RBAC, idempotency or audit. Mutating tools authorize against
+Architecture §5's matrix bound to the authenticated user's role, not to a
+looser agent-wide scope, and audit with actor="ai-agent" (or the impersonated
+user).
+
+Auth: MCP_AGENT_API_KEY validated per request by @mcp_tool, separate from the
+user JWT the REST API uses.
 """
 import os
 import sys
 import logging
-from datetime import datetime
 
-# Ensure the backend app is importable
+# Ensure the backend app is importable when this module is run as a process.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from fastmcp import FastMCP
 from app.core.config import settings
-from app.services.booking import BookingService
-from app.services.asset import AssetService
-from app.services.transfer import TransferService
-from app.services.note import NoteService
 from app.repositories.audit_query import AuditQueryRepository
 from app.audit.logger import AuditLogger
 from app.mcp.tool_wrapper import mcp_tool
@@ -44,134 +58,15 @@ from app.mcp.tool_wrapper import mcp_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("harmonix360.mcp")
 
-# Create FastMCP server instance
 mcp = FastMCP(
-    "Harmonix360 MCP Server",
-    instructions="Harmonix360 platform tools. Use these to manage assets, bookings, transfers, notes, and audit trails.",
+    "PeoplePay360 MCP Server",
+    instructions=(
+        "PeoplePay360 HR & Payroll tools. Read tools answer questions about employees, "
+        "contracts, attendance, leave and payroll; action tools submit and approve "
+        "requests through the same authorized services a human uses. The HR/Payroll "
+        "tool set lands in Phase 9; only the audit-trail reader is exposed today."
+    ),
 )
-
-
-@mcp_tool(mcp)
-async def create_booking(
-    session,
-    resource_type: str,
-    resource_public_id: str,
-    start_time: str,
-    end_time: str,
-    api_key: str = "",
-) -> dict:
-    """
-    Create a resource booking for any registered resource type (e.g. "asset", "meeting_room").
-
-    Args:
-        resource_type: The registered resource type to book (see app/services/resource_registry.py).
-        resource_public_id: The public ID (hashid) of the resource to book.
-        start_time: ISO 8601 formatted start time (e.g. "2026-08-10T09:00:00Z").
-        end_time: ISO 8601 formatted end time (e.g. "2026-08-10T17:00:00Z").
-        api_key: MCP agent API key for authentication.
-
-    Returns:
-        dict with booking details including the booking public_id.
-    """
-    start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-    end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-
-    service = BookingService(session)
-    booking = await service.create_booking(
-        resource_type=resource_type,
-        resource_public_id=resource_public_id,
-        start_time=start_dt,
-        end_time=end_dt,
-        actor_email="ai-agent",
-    )
-
-    return {
-        "status": "success",
-        "booking_id": booking.public_id,
-        "resource_type": resource_type,
-        "resource_public_id": resource_public_id,
-        "start_time": str(start_dt),
-        "end_time": str(end_dt),
-        "booking_status": booking.status.value,
-    }
-
-
-@mcp_tool(mcp)
-async def check_asset_status(
-    session,
-    asset_public_id: str,
-    api_key: str = "",
-) -> dict:
-    """
-    Check the current status and details of an asset.
-
-    Args:
-        asset_public_id: The public ID (hashid) of the asset to check.
-        api_key: MCP agent API key for authentication.
-
-    Returns:
-        dict with asset name, status, condition, location, and bookable flag.
-    """
-    service = AssetService(session)
-    asset = await service.get_asset(asset_public_id)
-
-    # Audit log the status check with actor="ai-agent"
-    await AuditLogger.log_mutation(
-        session=session,
-        actor="ai-agent",
-        action="MCP_CHECK_ASSET_STATUS",
-        entity="Asset",
-        entity_id=asset_public_id,
-        after_diff={"status": asset.status.value},
-    )
-
-    return {
-        "asset_public_id": asset.public_id,
-        "name": asset.name,
-        "asset_tag": asset.asset_tag,
-        "status": asset.status.value,
-        "condition": asset.condition.value,
-        "location": asset.location,
-        "is_bookable": asset.is_bookable,
-        "department_id": asset.department_id,
-    }
-
-
-@mcp_tool(mcp)
-async def approve_transfer(
-    session,
-    transfer_public_id: str,
-    note: str | None = None,
-    api_key: str = "",
-) -> dict:
-    """
-    Approve a transfer request (human override path via MCP).
-
-    This calls the same override endpoint as the REST API — no parallel logic.
-    The override is audit-logged with actor="ai-agent" (Section 6).
-
-    Args:
-        transfer_public_id: The public ID of the transfer request to approve.
-        note: Optional note explaining the approval.
-        api_key: MCP agent API key for authentication.
-
-    Returns:
-        dict with the updated transfer status.
-    """
-    service = TransferService(session)
-    transfer = await service.human_override(
-        transfer_public_id=transfer_public_id,
-        override_decision="approve",
-        note=note,
-        actor_email="ai-agent",
-    )
-
-    return {
-        "status": "success",
-        "transfer_public_id": transfer.public_id,
-        "transfer_status": transfer.status.value,
-        "note": note,
-    }
 
 
 @mcp_tool(mcp)
@@ -195,7 +90,9 @@ async def query_audit_trail(
     repo = AuditQueryRepository(session)
     entries = await repo.get_by_entity_id(entity_public_id, limit=limit)
 
-    # Audit log the query itself
+    # The query itself is audited — reading who was paid what is a privileged
+    # action, and Architecture §11 gives an agent read no quieter a trail than
+    # a human one.
     await AuditLogger.log_mutation(
         session=session,
         actor="ai-agent",
@@ -221,28 +118,7 @@ async def query_audit_trail(
     ]
 
 
-@mcp_tool(mcp)
-async def create_note(
-    session,
-    content: str,
-    api_key: str = "",
-) -> dict:
-    """
-    Create a note (proves @mcp_tool needs no bespoke session/audit/error-handling
-    boilerplate per tool — this is the entirety of the entity-specific code).
-
-    Args:
-        content: The note's text content.
-        api_key: MCP agent API key for authentication.
-
-    Returns:
-        dict with the created note's public_id and content.
-    """
-    note = await NoteService(session).create_note(content=content, actor_email="ai-agent")
-    return {"status": "success", "note_id": note.public_id, "content": note.content}
-
-
 if __name__ == "__main__":
     port = int(os.environ.get("MCP_SERVER_PORT", settings.MCP_SERVER_PORT))
-    logger.info("Starting Harmonix360 MCP Server on port %d (Streamable HTTP)", port)
+    logger.info("Starting PeoplePay360 MCP Server on port %d (Streamable HTTP)", port)
     mcp.run(transport="streamable-http", host="0.0.0.0", port=port)

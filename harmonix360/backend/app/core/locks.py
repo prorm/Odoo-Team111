@@ -32,16 +32,21 @@ already happened.
 
     async with AsyncSessionLocal() as session:
         async with session.begin():
-            await acquire_entity_lock(session, "trip", trip_id)
+            await acquire_entity_lock(session, "payrun", payrun_id)
             ...read the collection, compute new ordering, write it back...
         # COMMIT releases the lock
 
-Harmonix360 core has no bulk-resequencing operation of its own today (nothing in
-the AssetFlow domain stores a user-controlled sort order), so there is no call
-site here yet. It ships as core infrastructure because the alternative — a fork
-inventing its own locking under deadline pressure the first time it adds an
-ordered child collection — is how the read-modify-write bug gets written. See
-HARMONIX360_ARCHITECTURE.md Section 2a.
+PeoplePay360's call site is Payrun "Compute" (Architecture §6): computing a
+payrun deletes and rewrites that payrun's entire Payslip/PayslipLine set, which
+is exactly the read-compute-write over a parent-scoped collection this lock
+exists for. Two concurrent computes of the same payrun would otherwise
+interleave into a payslip set neither run intended, with every individual row
+still perfectly valid — the failure mode a per-row constraint cannot see.
+
+The wiring lands in Phase 5 with the rule engine; the helper ships ahead of it
+because the alternative — inventing locking under deadline pressure the first
+time it is needed — is how the read-modify-write bug gets written. See
+02_SYSTEM_ARCHITECTURE.md §6.
 """
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession

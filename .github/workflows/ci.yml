@@ -25,7 +25,8 @@ jobs:
           --health-retries 10
 
       # Required because app/core/rate_limit.py's rate_limiter dependency
-      # (used by every API router, including bookings) hits Redis on every request.
+      # (used by every API router) hits Redis on every request, as does the
+      # Idempotency-Key middleware.
       redis:
         image: redis:7-alpine
         ports:
@@ -51,10 +52,10 @@ jobs:
       JWT_SECRET: harmonix360-ci-jwt-secret
       MCP_AGENT_API_KEY: harmonix360-ci-mcp-key
       ENVIRONMENT: development
-      # No SigNoz collector in CI. Point at a closed local port so span export
-      # fails fast (connection refused) instead of burning the job on DNS
-      # resolution retries for the compose-network hostname.
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+      # No SigNoz collector in CI. OTEL_ENABLED=false skips tracer setup
+      # entirely rather than exporting spans at a host that isn't there —
+      # SigNoz only runs under `docker compose --profile advanced`.
+      OTEL_ENABLED: "false"
 
     steps:
       - uses: actions/checkout@v4

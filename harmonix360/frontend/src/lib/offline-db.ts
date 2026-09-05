@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 
 /**
  * Generic offline store for ANY entity_type the backend registers in
- * app/services/sync_registry.py — this file has no Note/Asset-specific code,
+ * app/services/sync_registry.py — this file has no entity-specific code,
  * the same separation the backend keeps between app/services/sync.py and the
  * concrete entities it syncs. A new entity type needs zero changes here; it
  * just starts showing up as rows keyed by its own entity_type string.
