@@ -288,11 +288,37 @@ async def dashboard_dataset(client, cleanup_employees, cleanup_schedules, cleanu
             payslip_ids.append(row.id)
             return row
 
+        # REAL Phase 4-shaped entries — {code, severity, message, references},
+        # exactly what `PayrollWarning.as_dict` writes
+        # (app/services/payroll_context.py). Alice deliberately carries one
+        # BLOCKING code the old normalizer happened to recognize
+        # (missing_bank_details) and one it flattened to "other"
+        # (missing_checkout), plus an ADVISORY, so a regression that loses
+        # severity or re-flattens codes cannot pass by matching the easy one.
         await _payslip(
             alice["id"],
             net=Decimal("3000.00"),
             status=PayslipStatus.PAID,
-            warnings=[{"category": "missing_bank_details", "message": "No bank account on file"}],
+            warnings=[
+                {
+                    "code": "missing_bank_details",
+                    "severity": "blocking",
+                    "message": "Alice Anderson has no bank account on file, so this payslip cannot be paid out.",
+                    "references": [alice["id"]],
+                },
+                {
+                    "code": "missing_checkout",
+                    "severity": "blocking",
+                    "message": "Alice Anderson has attendance without a check-out on 2026-09-09.",
+                    "references": [alice["id"]],
+                },
+                {
+                    "code": "structure_mismatch",
+                    "severity": "advisory",
+                    "message": "Contract names a different salary structure than this payrun.",
+                    "references": [alice["id"]],
+                },
+            ],
         )
         await _payslip(
             bob["id"], net=Decimal("4000.00"), status=PayslipStatus.PAID, warnings=["Legacy note: reviewed manually"]
@@ -312,6 +338,10 @@ async def dashboard_dataset(client, cleanup_employees, cleanup_schedules, cleanu
         "dave": dave,
         "erin": erin,
         "frank": frank,
+        #: Internal ids, so a test can exercise a state the API has no verb
+        #: for from this side — soft-deleting the payrun out from under the
+        #: dashboard, which Phase 4's own `delete_payrun` does.
+        "payrun_ids": payrun_ids,
     }
 
     async with AsyncSessionLocal() as s:
@@ -370,8 +400,19 @@ async def test_average_salary_is_per_employee_not_flat(client, dashboard_dataset
 
 
 async def test_approved_time_off_counts_only_approved_status(client, dashboard_dataset):
+    """Scoped to this fixture's own department, deliberately.
+
+    `approved_time_off` is an ORG-WIDE count when no department filter is
+    given — which is the correct product behaviour, and exactly why an
+    absolute assertion against the unfiltered number is not a valid test: it
+    holds only on an empty database, and breaks the moment any unrelated row
+    (another suite's fixture, a machine-local demo record) falls in the same
+    window. Filtering by the fixture's own department makes the assertion
+    about this dataset instead of about the whole table.
+    """
     resp = await client.get(
-        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
+        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}"
+        f"&department_id={dashboard_dataset['engineering']}",
         headers=PAYROLL_MANAGER,
     )
     assert resp.json()["kpis"]["approved_time_off"] == 1  # only alice's
@@ -428,17 +469,163 @@ async def test_monthly_net_salary_trend(client, dashboard_dataset):
 # =========================================================================== alerts
 
 async def test_payroll_warnings_are_read_verbatim_and_normalized(client, dashboard_dataset):
+    """Every field Phase 4 writes reaches the dashboard, with `code` verbatim.
+
+    THIS IS THE REGRESSION TEST for the Phase 4/6 integration bug. Before the
+    fix, `_normalize_warning` guessed at `category`/`type`/`code`, returned
+    only `(category, message)`, and filtered the result against a set that
+    predated Phase 4 — so `severity` and `references` were dropped entirely
+    and four of Phase 4's six real codes (`missing_checkout`, `contract_gap`,
+    `structure_mismatch`, `no_attendance`) were flattened to "other". A payrun
+    blocked by a missing check-out looked exactly like one blocked by nothing
+    in particular.
+
+    The `code` assertion is the one that matters most: it is the join key
+    someone uses to find this warning on the payslip it came from, so it must
+    be Phase 4's own string and not a dashboard-local rename.
+    """
     resp = await client.get(
         f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
         headers=PAYROLL_MANAGER,
     )
     warnings = resp.json()["warnings"]
-    categories = {w["category"] for w in warnings}
-    assert "missing_bank_details" in categories
-    # A warning entry with no recognizable shape falls back to "other" rather
-    # than being invented or dropped.
-    assert "other" in categories
-    assert len(warnings) == 2
+    by_code = {w["code"]: w for w in warnings}
+
+    # Alice's three Phase 4-shaped entries, plus Bob's unrecognizable one.
+    assert len(warnings) == 4
+
+    bank = by_code["missing_bank_details"]
+    assert bank["severity"] == "blocking"
+    assert bank["recognized"] is True
+    assert bank["references"] == [dashboard_dataset["alice"]["id"]]
+    assert "bank account" in bank["message"]
+    assert bank["employee_id"] == dashboard_dataset["alice"]["id"]
+    assert bank["payslip_id"].startswith("pslip_")
+
+    # The code the OLD normalizer flattened to "other" — the exact regression.
+    checkout = by_code["missing_checkout"]
+    assert checkout["severity"] == "blocking"
+    assert checkout["recognized"] is True
+
+    # Severity is preserved, not assumed: this one is advisory.
+    mismatch = by_code["structure_mismatch"]
+    assert mismatch["severity"] == "advisory"
+    assert mismatch["recognized"] is True
+
+    # An entry with no recognizable shape is still reported — never dropped,
+    # never relabelled as a real code — and is treated as blocking, because
+    # "we could not read this payroll warning" is not a reassuring state.
+    unrecognized = by_code["unrecognized"]
+    assert unrecognized["recognized"] is False
+    assert unrecognized["severity"] == "blocking"
+    assert unrecognized["message"] == "Legacy note: reviewed manually"
+
+
+async def test_blocking_warnings_sort_above_advisory_ones(client, dashboard_dataset):
+    """PRD §5.10's gate is about what stops a payrun being finalized, so an
+    advisory must not push a blocking finding down the list."""
+    resp = await client.get(
+        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
+        headers=PAYROLL_MANAGER,
+    )
+    severities = [w["severity"] for w in resp.json()["warnings"]]
+    assert severities == sorted(severities, key=lambda s: s != "blocking")
+    assert severities[-1] == "advisory"
+
+
+@pytest.mark.parametrize(
+    "code, severity",
+    [
+        ("missing_bank_details", "blocking"),
+        ("missing_checkout", "blocking"),
+        ("contract_gap", "blocking"),
+        ("duplicate_payslip", "blocking"),
+        ("no_payslip", "blocking"),
+        ("structure_mismatch", "advisory"),
+        ("no_attendance", "advisory"),
+    ],
+)
+def test_every_real_phase4_warning_code_is_recognized(code, severity):
+    """Every code Phase 4 can emit survives normalization with its own code
+    and severity intact.
+
+    Parametrized over the full set read off `warning_checks`
+    (app/services/payroll_context.py) and `validation_report`
+    (app/services/payroll.py). If Phase 4 adds a code and nobody teaches this
+    dashboard about it, the new code still renders — `recognized` goes False
+    rather than the entry being relabelled — but this list is the reminder to
+    add it deliberately.
+    """
+    from app.services.dashboard import _normalize_warning
+
+    normalized = _normalize_warning(
+        {"code": code, "severity": severity, "message": "m", "references": ["emp_x"]}
+    )
+    assert normalized["code"] == code, "the code must pass through verbatim, never renamed"
+    assert normalized["severity"] == severity
+    assert normalized["references"] == ["emp_x"]
+    assert normalized["recognized"] is True
+
+
+def test_an_unknown_future_code_is_reported_not_relabelled():
+    """A warning a later phase adds must stay visible under its own name."""
+    from app.services.dashboard import _normalize_warning
+
+    normalized = _normalize_warning(
+        {"code": "some_future_check", "severity": "advisory", "message": "m", "references": []}
+    )
+    assert normalized["code"] == "some_future_check"
+    assert normalized["severity"] == "advisory"
+    assert normalized["recognized"] is False
+
+
+async def test_payslips_of_a_soft_deleted_payrun_are_excluded(client, dashboard_dataset, session):
+    """Phase 4's `delete_payrun` SOFT-deletes the run and leaves its payslips
+    in place, so the dashboard's payrun join must exclude deleted runs.
+
+    Without `Payrun.deleted_at IS NULL` in `_period_overlaps_payrun`, a
+    deleted draft or computed payrun's payslips kept appearing in
+    `payslips_generated` and in the warning feed.
+    """
+    from datetime import UTC, datetime
+
+    from app.models.payroll import Payrun as PayrunModel
+
+    before = (
+        await client.get(
+            f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
+            headers=PAYROLL_MANAGER,
+        )
+    ).json()
+    assert before["kpis"]["payslips_generated"] > 0
+    assert before["warnings"]
+
+    payrun_id = dashboard_dataset["payrun_ids"][0]
+    async with AsyncSessionLocal() as s:
+        await s.execute(
+            PayrunModel.__table__.update()
+            .where(PayrunModel.id == payrun_id)
+            .values(deleted_at=datetime.now(UTC))
+        )
+        await s.commit()
+    try:
+        after = (
+            await client.get(
+                f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
+                headers=PAYROLL_MANAGER,
+            )
+        ).json()
+        assert after["kpis"]["payslips_generated"] == 0
+        assert after["warnings"] == []
+        assert Decimal(after["kpis"]["total_net_salary_paid"]) == Decimal("0.00")
+    finally:
+        async with AsyncSessionLocal() as s:
+            await s.execute(
+                PayrunModel.__table__.update()
+                .where(PayrunModel.id == payrun_id)
+                .values(deleted_at=None)
+            )
+            await s.commit()
 
 
 async def test_contract_attention_flags_expiring_and_missing(client, dashboard_dataset):
@@ -466,14 +653,33 @@ async def test_attendance_by_status_breakdown(client, dashboard_dataset):
 
 
 async def test_time_off_overview_breakdown_and_balance(client, dashboard_dataset):
-    resp = await client.get(
-        f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}",
-        headers=PAYROLL_MANAGER,
-    )
-    time_off = resp.json()["time_off"]
-    assert time_off["pending"] == 1
-    assert time_off["approved"] == 1
-    assert time_off["refused"] == 1
+    """Per-department, so the counts are about this fixture rather than about
+    every row in the table — see the note on
+    `test_approved_time_off_counts_only_approved_status`. Engineering holds
+    alice (approved) and bob (pending); Sales holds carol (refused)."""
+    engineering = (
+        await client.get(
+            f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}"
+            f"&department_id={dashboard_dataset['engineering']}",
+            headers=PAYROLL_MANAGER,
+        )
+    ).json()["time_off"]
+    assert engineering["pending"] == 1  # bob
+    assert engineering["approved"] == 1  # alice
+    assert engineering["refused"] == 0
+
+    sales = (
+        await client.get(
+            f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}"
+            f"&department_id={dashboard_dataset['sales']}",
+            headers=PAYROLL_MANAGER,
+        )
+    ).json()["time_off"]
+    assert sales["refused"] == 1  # carol
+
+    time_off = engineering
+    # The balance summary is keyed by type name, so this fixture's own type is
+    # already isolated from anything else in the table.
     balance = _get(time_off["balance_summary"], time_off_type="Annual Leave")
     assert Decimal(balance["allocated"]) == Decimal("10.00")
     assert Decimal(balance["taken"]) == Decimal("2.00")
@@ -522,6 +728,13 @@ async def test_department_filter_narrows_every_widget_consistently(client, dashb
 
 
 async def test_employee_type_filter_narrows_every_widget_consistently(client, dashboard_dataset):
+    """Both filters together, so the assertions are about this fixture.
+
+    The money figure is already isolated (only this fixture's payslips sit on
+    a payrun in this window); the time-off count is not, so it is scoped by
+    department as well — see
+    `test_approved_time_off_counts_only_approved_status`.
+    """
     resp = await client.get(
         f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}&employee_type=permanent",
         headers=PAYROLL_MANAGER,
@@ -529,7 +742,18 @@ async def test_employee_type_filter_narrows_every_widget_consistently(client, da
     body = resp.json()
     # permanent: alice, bob, erin, frank — carol (contract) and dave (intern) excluded.
     assert Decimal(body["kpis"]["total_net_salary_paid"]) == Decimal("7000.00")
-    assert body["kpis"]["approved_time_off"] == 1  # alice's, still permanent
+
+    scoped = (
+        await client.get(
+            f"{BASE}/dashboard/summary?period_start={PERIOD_START}&period_end={PERIOD_END}"
+            f"&employee_type=permanent&department_id={dashboard_dataset['engineering']}",
+            headers=PAYROLL_MANAGER,
+        )
+    ).json()
+    assert scoped["kpis"]["approved_time_off"] == 1  # alice's, still permanent
+    # The type filter genuinely narrows: carol is contract, so Sales' paid
+    # payslip drops out of the permanent-only money total.
+    assert Decimal(scoped["kpis"]["total_net_salary_paid"]) == Decimal("7000.00")
 
 
 # =========================================================================== RBAC

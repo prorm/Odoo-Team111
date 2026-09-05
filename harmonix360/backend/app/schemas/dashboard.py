@@ -86,14 +86,30 @@ class TimeOffOverview(ORMModel):
     balance_summary: List[TimeOffBalanceSummary]
 
 
-#: The only categories `_normalize_warning` recognizes today (PRD §5.7 /
-#: task §H). Anything else lands in "other" — never invented, never dropped.
-WarningCategory = str
-
-
 class PayrollWarning(ORMModel):
-    category: WarningCategory
+    """One `Payslip.warnings` entry, as written by Phase 4's engine.
+
+    `code`, `severity`, `message` and `references` are Phase 4's own four
+    fields, passed through unchanged — `code` above all, so an alert here and
+    the warning on the payslip it came from are the same string and can be
+    cross-referenced. Display labels live in the frontend; this is data.
+    """
+
+    #: Phase 4's real warning code — `missing_bank_details`, `missing_checkout`,
+    #: `contract_gap`, `duplicate_payslip`, `structure_mismatch`,
+    #: `no_attendance` (and `no_payslip`, which Phase 4 derives at Validate).
+    code: str
+    #: "blocking" or "advisory". Blocking findings are what stop a payrun being
+    #: validated (PRD §5.10); the distinction is the point of the field.
+    severity: str
     message: str
+    #: Public ids of the records to open to fix this — PRD §5.10's "navigation
+    #: straight to the offending records".
+    references: List[str] = Field(default_factory=list)
+    #: False when this dashboard build does not know the code, i.e. Phase 4 (or
+    #: a later phase) added a warning after this code was written. The entry is
+    #: still reported in full rather than being relabelled or dropped.
+    recognized: bool = True
     payslip_id: str
     employee_id: str
     employee_name: str

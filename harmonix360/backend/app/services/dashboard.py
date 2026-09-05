@@ -54,12 +54,34 @@ TWO_PLACES = Decimal("0.01")
 #: wanted.
 CONTRACT_EXPIRY_HORIZON_DAYS = 30
 
-#: Categories `_normalize_warning` recognizes (PRD §5.7, task §H). Anything
-#: else — including a bare string, or a dict with none of these keys — is
-#: reported as "other" rather than dropped or invented.
-_RECOGNIZED_WARNING_CATEGORIES = frozenset(
-    {"missing_bank_details", "duplicate_payslip", "missing_contract", "contract_attention"}
+#: The warning codes Phase 4's engine actually emits, read off the two places
+#: that construct them: `PayrollWarning(...)` in
+#: `app/services/payroll_context.py::warning_checks` (the six persisted into
+#: `Payslip.warnings`) and the `no_payslip` entry
+#: `app/services/payroll.py::validation_report` derives at Validate time for a
+#: selected employee who has no payslip at all.
+#:
+#: This set exists to VALIDATE, not to translate: an entry whose code is in
+#: here is passed through with Phase 4's own code string, so an alert on this
+#: dashboard and the warning on the payslip it came from say the same word and
+#: a person can cross-reference them. Display text is the frontend's job
+#: (`WARNING_LABELS` in ReportsPage.tsx), not a second vocabulary here.
+#:
+#: An unrecognized code is still reported, with its real code preserved and
+#: `recognized=False`, rather than being flattened into "other" — a code this
+#: dashboard has not been taught about is a new Phase 4 warning, and silently
+#: relabelling it is how a blocking payroll issue stops being visible.
+_PHASE4_BLOCKING_CODES = frozenset(
+    {"missing_bank_details", "missing_checkout", "contract_gap", "duplicate_payslip", "no_payslip"}
 )
+_PHASE4_ADVISORY_CODES = frozenset({"structure_mismatch", "no_attendance"})
+_PHASE4_WARNING_CODES = _PHASE4_BLOCKING_CODES | _PHASE4_ADVISORY_CODES
+
+#: Phase 4's severity vocabulary (`app/services/payroll_context.py`: BLOCKING =
+#: "blocking", ADVISORY = "advisory"). Mirrored as literals rather than
+#: imported so a read-only dashboard does not import from the write path.
+BLOCKING = "blocking"
+ADVISORY = "advisory"
 
 #: Weekday.MONDAY..SUNDAY declares in the same order as Python's
 #: date.weekday() (Monday=0..Sunday=6) — WEEKDAY_ORDER already encodes that,
@@ -133,7 +155,22 @@ def _employee_conditions(filters: ResolvedFilters, *, require_active: bool = Fal
 
 
 def _period_overlaps_payrun(filters: ResolvedFilters):
-    return (Payrun.period_start <= filters.period_end, Payrun.period_end >= filters.period_start)
+    """The payrun-side predicate every payroll query shares.
+
+    `Payrun.deleted_at IS NULL` belongs here, and its absence was a real
+    integration defect found against the merged Phase 4 code: `delete_payrun`
+    SOFT-deletes the run and deliberately leaves its payslips in place (they
+    are the run's history), so every payslip of a deleted draft or computed
+    payrun stayed in `payslips_generated` and in the warning feed. The money
+    KPIs happened to escape it — they filter `Payslip.status == PAID`, and
+    Phase 4 refuses to delete a validated or paid run at all — but "happened
+    to escape" is not a property to rely on when the next KPI is written.
+    """
+    return (
+        Payrun.deleted_at.is_(None),
+        Payrun.period_start <= filters.period_end,
+        Payrun.period_end >= filters.period_start,
+    )
 
 
 def _expected_working_days_for_schedule(
@@ -154,14 +191,63 @@ def _expected_working_days_for_schedule(
     return total
 
 
-def _normalize_warning(raw: Any) -> tuple[str, str]:
-    if isinstance(raw, dict):
-        category = str(raw.get("category") or raw.get("type") or raw.get("code") or "other").strip().lower()
-        message = str(raw.get("message") or raw.get("detail") or raw)
-        if category not in _RECOGNIZED_WARNING_CATEGORIES:
-            category = "other"
-        return category, message
-    return "other", str(raw)
+def _normalize_warning(raw: Any) -> dict:
+    """One persisted `Payslip.warnings` entry, as the dashboard reports it.
+
+    Phase 4 writes exactly four keys (`PayrollWarning.as_dict`,
+    app/services/payroll_context.py):
+
+        {"code": str, "severity": "blocking"|"advisory",
+         "message": str, "references": [public_id, ...]}
+
+    This function reads those four and nothing else. It previously guessed at
+    `category` -> `type` -> `code` and returned only `(category, message)`,
+    which had two consequences worth naming, because the second is the one
+    that mattered:
+
+      * `severity` and `references` were dropped, so the dashboard could not
+        tell a BLOCKING finding (which stops a payrun being validated, PRD
+        §5.10) from an ADVISORY one, and could not link to the records to fix;
+      * the code was then filtered against a set that predated Phase 4 and
+        contained two codes Phase 4 never emits, so four of the six real codes
+        — `missing_checkout`, `contract_gap`, `structure_mismatch`,
+        `no_attendance` — were flattened to "other" and became indistinguishable
+        on screen.
+
+    `code` is passed through verbatim, never renamed: it is the join key a
+    person uses to find this warning on the payslip it came from.
+
+    Anything that is not a Phase 4-shaped dict (a bare string, a dict with no
+    `code`) is still reported rather than dropped, marked `recognized=False`
+    and defaulted to BLOCKING — an entry this function does not understand is
+    the one case where guessing "probably fine" is most expensive.
+    """
+    if not isinstance(raw, dict):
+        return {
+            "code": "unrecognized",
+            "severity": BLOCKING,
+            "message": str(raw),
+            "references": [],
+            "recognized": False,
+        }
+
+    code = str(raw.get("code") or "unrecognized").strip()
+    severity = str(raw.get("severity") or "").strip().lower()
+    if severity not in (BLOCKING, ADVISORY):
+        # Fail loud rather than quiet: an entry whose severity cannot be read
+        # is surfaced at the level that gets acted on.
+        severity = BLOCKING
+    references = raw.get("references") or []
+    if not isinstance(references, list):
+        references = [str(references)]
+
+    return {
+        "code": code,
+        "severity": severity,
+        "message": str(raw.get("message") or ""),
+        "references": [str(reference) for reference in references],
+        "recognized": code in _PHASE4_WARNING_CODES,
+    }
 
 
 class DashboardService:
@@ -358,16 +444,18 @@ class DashboardService:
         out = []
         for payslip, employee in rows:
             for raw in payslip.warnings or []:
-                category, message = _normalize_warning(raw)
                 out.append(
                     {
-                        "category": category,
-                        "message": message,
+                        **_normalize_warning(raw),
                         "payslip_id": payslip.public_id,
                         "employee_id": employee.public_id,
                         "employee_name": employee.full_name,
                     }
                 )
+        # Blocking first: PRD §5.10's gate is about what stops a payrun being
+        # finalized, and an advisory scrolling above a blocking issue buries
+        # the one that needs action. Ties keep query order, which is stable.
+        out.sort(key=lambda warning: warning["severity"] != BLOCKING)
         return out
 
     async def contract_attention(self, filters: ResolvedFilters) -> list[dict]:

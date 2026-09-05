@@ -739,3 +739,124 @@ was branched from `phase-3` before Phase 4 existed. That list is superseded:
 3. **Integration convergence:** Phase 3, 4 and 6 are converged on `dev`; see
    "Phase 6 integrated with Phase 4" below for what that integration actually
    had to fix.
+
+## Phase 6 integrated with Phase 4
+
+`phase-6-dashboard` was branched from `phase-3`, before Phase 4 existed, so it
+was written against a payroll schema whose *writer* did not yet exist. This
+change rebases it onto Phase 4 and fixes how the dashboard READS what Phase 4
+writes. No Phase 4 computation, resolver call, transaction/locking or
+warning-generation code was modified — every Phase 4 file is byte-identical to
+commit `5e2790a` (verified with `git diff 5e2790a -- <file>`).
+
+### Branch topology, since the handoff above got it wrong
+
+`origin/dev` was still at Phase 2 when this integration started; neither Phase
+3 nor Phase 4 had been pushed to it. `phase-6-dashboard`'s merge-base with
+`dev` is `074a6d6` (Phase 2) and with `phase-3` is `5382648` — it forked from
+**phase-3**, not from a dev containing Phase 4. Rebasing it onto `origin/dev`
+as it then stood would have replayed the dashboard onto a Phase 2 base and
+stripped Phase 3's resolver out from under it. Phase 4 was pushed and landed on
+`dev` first; the rebase target was that.
+
+### The bug this integration existed to find
+
+`_normalize_warning` guessed at three possible key names
+(`category` → `type` → `code`) and returned only `(category, message)`. Against
+Phase 4's real `Payslip.warnings` entries — `{code, severity, message,
+references}`, written by `PayrollWarning.as_dict` — that failed twice:
+
+1. **`severity` and `references` were dropped entirely.** Phase 4's
+   blocking/advisory distinction is what PRD §5.10's pre-finalization gate is
+   built on, and it never reached the dashboard; neither did the public ids
+   that let a user open the offending record.
+2. **Four of the six real codes were flattened to `"other"`.** The
+   recognized-set filter predated Phase 4 and listed `missing_contract` and
+   `contract_attention`, two codes Phase 4 never emits. Only
+   `missing_bank_details` and `duplicate_payslip` survived; `missing_checkout`,
+   `contract_gap`, `structure_mismatch` and `no_attendance` all rendered as
+   "Other". A payrun blocked by a missing check-out looked exactly like one
+   blocked by nothing in particular.
+
+The fix reads Phase 4's four keys exactly and passes `code` through
+**verbatim** — it is the join key someone uses to find the same warning on the
+payslip it came from, so a dashboard-local rename would break precisely the
+cross-reference the field exists for. Display text stays in the frontend's
+`WARNING_LABELS`. An unknown code is reported with `recognized: false` rather
+than relabelled: a code this dashboard has not been taught about is a NEW
+Phase 4 warning, and silently renaming it is how a blocking payroll issue
+stops being visible.
+
+### A second, unasked-for bug the cross-check turned up
+
+`_period_overlaps_payrun` did not filter `Payrun.deleted_at IS NULL`. Phase 4's
+`delete_payrun` SOFT-deletes the run and deliberately leaves its payslips in
+place, so every payslip of a deleted draft or computed payrun stayed in
+`payslips_generated` and in the warning feed. The money KPIs escaped it only
+because they filter `status == PAID` and Phase 4 refuses to delete a validated
+or paid run — an accident, not a design, and not one to leave in place for the
+next KPI to trip over. Predicate fixed; regression test added.
+
+### The four assumptions, checked against real code
+
+See `docs/dashboard-phase4-integration.md` for the full verdicts. Summary:
+
+| # | Assumption | Verdict |
+|---|---|---|
+| 1 | `Payslip.net_amount` is authoritative | CONFIRMED |
+| 2 | `status == 'paid'` means actually paid | CONFIRMED — and there is no "Approved" status; it is DRAFT → COMPUTED → VALIDATED → PAID |
+| 3 | Period comes from the `Payrun` | CORRECTED — the join needed `Payrun.deleted_at IS NULL` |
+| 4 | `employee_id`/`contract_id` present; group by employee's department | CONFIRMED |
+| 5 | `warnings` shape undefined | CORRECTED — defined now, and the normalizer was wrong |
+
+"Payslips Generated" does **not** double-count a recomputed payrun: Phase 4's
+recompute HARD-deletes the run's payslips before rewriting (a soft delete would
+leave a tombstone occupying `uq_payslip_payrun_employee`), so one payslip per
+employee per run, with the unique constraint as backstop. Two payslips for one
+employee in the window means two different payruns over overlapping periods —
+which is real, and is itself flagged by Phase 4 as a blocking
+`duplicate_payslip` warning.
+
+### Three pre-existing dashboard test failures, fixed
+
+`test_approved_time_off_counts_only_approved_status`,
+`test_time_off_overview_breakdown_and_balance` and
+`test_employee_type_filter_narrows_every_widget_consistently` were failing
+BEFORE this integration (verified by stashing every change and re-running).
+They asserted absolute counts against ORG-WIDE aggregates, which hold only on
+an empty database; the extra row was `phase2.ui@peoplepay360.com`, the
+machine-local Phase 2 browser fixture this file already documents as retained.
+
+The dashboard was right and the tests were wrong: an unfiltered org-wide count
+SHOULD count the whole org. The assertions are now scoped by the fixture's own
+department, so they are about this dataset instead of about the table. No
+product behaviour changed.
+
+### Files changed (dashboard-side reads only)
+
+- `app/services/dashboard.py`: `_normalize_warning` rewritten;
+  `_period_overlaps_payrun` gained the deleted-payrun filter; warnings sort
+  blocking-first.
+- `app/schemas/dashboard.py`: `PayrollWarning` carries
+  `code`/`severity`/`references`/`recognized` instead of `category`.
+- `tests/test_dashboard.py`: fixture seeds REAL Phase 4-shaped warnings; new
+  regression tests for every real code, for severity preservation, for an
+  unknown future code, for blocking-first ordering, and for the soft-deleted
+  payrun; three pre-existing tests scoped to the fixture's department.
+- `frontend/src/types/dashboard.ts`, `frontend/src/routes/reports/ReportsPage.tsx`:
+  matching shape, labels for all seven real codes, blocking rendered in the
+  harder colour.
+- `frontend/src/router.tsx`: rebase conflict resolved keeping BOTH phases'
+  routes (`/payroll`, `/payroll/:payrunId`, `/reports`). The now-unused
+  `SectionStub` import was removed because `noUnusedLocals` is on and both
+  stubs it served are gone; the component file itself is kept.
+- `app/api/v1/routers/dashboard.py` was NOT changed, as the integration doc
+  predicted.
+
+### Validation record
+
+- **329 backend tests passed** (298 Phase 1-4 + 31 dashboard), real
+  PostgreSQL/Redis, no failures and no skips.
+- Frontend typecheck + production build pass. `npm install` is required after
+  this rebase: Phase 6 added `recharts` to `package.json`, so a `node_modules`
+  from before the rebase fails `tsc` with TS2307.

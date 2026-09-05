@@ -69,12 +69,24 @@ function money(value: string): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/**
+ * Display text for the payroll engine's warning codes. Presentation only —
+ * the API returns Phase 4's real `code`, and this maps it to a label a person
+ * reads. A code missing from here still renders (as the raw code), because a
+ * warning added by a later phase must stay visible rather than disappear
+ * behind a lookup miss.
+ *
+ * Keys mirror `warning_checks` in app/services/payroll_context.py, plus
+ * `no_payslip`, which Phase 4 derives at Validate time.
+ */
 const WARNING_LABELS: Record<string, string> = {
   missing_bank_details: 'Missing bank details',
+  missing_checkout: 'Missing check-out',
+  contract_gap: 'Contract gap',
   duplicate_payslip: 'Duplicate payslip',
-  missing_contract: 'Missing contract',
-  contract_attention: 'Contract attention',
-  other: 'Other',
+  structure_mismatch: 'Structure mismatch',
+  no_attendance: 'No attendance',
+  no_payslip: 'No payslip computed',
 };
 
 const ATTENDANCE_STATUS_LABELS: Record<string, string> = {
@@ -347,8 +359,15 @@ function WarningsCard({ warnings }: { warnings: PayrollWarning[] }) {
                   <p className="truncate text-sm text-slate-200">{warning.employee_name}</p>
                   <p className="mt-0.5 text-xs text-slate-400">{warning.message}</p>
                 </div>
-                <Badge variant="warning" className="flex-shrink-0">
-                  {WARNING_LABELS[warning.category] ?? warning.category}
+                {/* Blocking findings are what stop a payrun being validated
+                    (PRD §5.10), so they are coloured as the harder state
+                    rather than sharing one amber badge with advisories. */}
+                <Badge
+                  variant={warning.severity === 'blocking' ? 'destructive' : 'warning'}
+                  className="flex-shrink-0"
+                  title={`${warning.code} · ${warning.severity}`}
+                >
+                  {WARNING_LABELS[warning.code] ?? warning.code}
                 </Badge>
               </li>
             ))}

@@ -61,9 +61,24 @@ export interface TimeOffOverview {
   balance_summary: TimeOffBalanceSummary[];
 }
 
+/**
+ * One warning the payroll engine wrote onto a payslip.
+ *
+ * `code` is Phase 4's own code string, unchanged end to end, so an alert here
+ * and the warning on the payslip it came from are the same word — that is what
+ * makes cross-referencing possible. `WARNING_LABELS` in ReportsPage.tsx turns
+ * it into display text; it never becomes a different code.
+ */
 export interface PayrollWarning {
-  category: string;
+  code: string;
+  /** 'blocking' stops the payrun being validated (PRD §5.10); 'advisory' does not. */
+  severity: 'blocking' | 'advisory';
   message: string;
+  /** Public ids of the records to open to fix this. */
+  references: string[];
+  /** False when the backend did not recognize the code — a warning added by a
+   *  later phase. Still rendered, using the raw code. */
+  recognized: boolean;
   payslip_id: string;
   employee_id: string;
   employee_name: string;
