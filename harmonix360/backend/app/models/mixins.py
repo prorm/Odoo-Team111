@@ -13,9 +13,11 @@ class AuditedEntity:
     """Declarative mixin for the columns every audited entity repeats:
     id, public_id, tenant_id, created_at, updated_at, deleted_at, version.
 
-    Column names/types match what Asset/TransferRequest/ResourceBooking already
-    had inline, so mixing this in is a no-op at the DB level — Alembic autogenerate
-    against this should produce an empty diff.
+    Architecture §4: every entity gets this EXCEPT pure line-item children
+    (ScheduleLine, SalaryStructureRule, PayrunEmployee, PayslipLine). A line has
+    no independent lifecycle — it is rewritten with its parent, and the parent's
+    `version` is what guards the edit — so per-line versioning would guard
+    nothing while turning every parent update into a multi-row version dance.
 
     `version` — REAL optimistic concurrency, not the 001-010 decorative column
     dropped in `011_drop_decorative_version` (nothing read/incremented/compared

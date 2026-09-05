@@ -1,9 +1,16 @@
 """Generic offline-sync engine: GET /sync/pull and POST /sync/push.
 
-Works entirely off app/services/sync_registry.py entries — no Note/Asset-
-specific code lives here, the same separation resource_registry.py keeps
-between app/services/booking.py and the concrete resource types it books.
-See HARMONIX360_ARCHITECTURE.md §13.3 for the cursor/conflict/idempotency design.
+Works entirely off app/services/sync_registry.py entries — no entity-specific
+code lives here at all, which is why swapping the whole domain out from under
+it (AssetFlow's note/asset registrations, deleted in Phase 0) required zero
+changes to this file.
+
+Currently dormant: the registry is empty until Phase 8 registers `attendance`
+and `time_off_request` (Architecture §8.3). Pull rejects every entity type and
+push applies nothing, which is correct behaviour for an engine with no
+registered surface — not a fault.
+
+See 02_SYSTEM_ARCHITECTURE.md §8.3 for the cursor/conflict/idempotency design.
 """
 import base64
 import json

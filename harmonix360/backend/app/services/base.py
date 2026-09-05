@@ -12,33 +12,43 @@ class BaseService(Generic[ModelT]):
     """Wires a repo to an entity-name label so 404s and audit-log `entity=`
     values are generated once instead of hand-typed in every service method.
 
-    CONTRACT — database-constraint translation (Section 2, rule 8)
-    -------------------------------------------------------------
+    CONTRACT — database-constraint translation (Architecture §6)
+    ------------------------------------------------------------
     create()/update()/soft_delete() below flush to Postgres, so any table-level
     constraint the entity carries fires *here*, as a raw `IntegrityError`, not
     at the call site that set the attribute. This class deliberately does NOT
     catch it: what an exclusion or deferred-constraint violation *means* is
-    domain knowledge (for a booking it is "already taken" -> 409; for a
-    background job it may be "retry" or "leave in place"), and guessing one
-    translation for every entity would be worse than none.
+    domain knowledge (for a contract it is "this employee already has an active
+    contract covering these dates" -> 409; for a background job it may be
+    "retry" or "leave in place"), and guessing one translation for every entity
+    would be worse than none.
 
     The obligation therefore sits on the subclass. Any service method that
     mutates a table carrying an `EXCLUDE` constraint, a `DEFERRABLE` constraint,
     or a partial unique index MUST wrap its create()/update() call and translate
     the resulting SQLSTATE into a domain outcome — and must do so in EVERY
     mutation method that can move a row into the constrained set, not just the
-    obvious one. Reference implementation: `app/services/booking.py`, which
-    defines `EXCLUSION_VIOLATION_SQLSTATE = "23P01"` and applies the identical
-    try/except in both `_create_booking` (INSERT) and `override_booking`
-    (UPDATE into CONFIRMED).
+    obvious one.
 
-    The trap this contract exists to close: a status-only UPDATE looks harmless
-    at the call site, but under a predicated EXCLUDE constraint
-    (`resource_bookings_range_overlap_excl`, migration
-    `010_booking_exclusion_predicate`) changing a status is exactly what moves a
-    row into the constrained set. Skipping the guard on the UPDATE path while
-    remembering it on the INSERT path is the specific inconsistency this note is
-    here to prevent in future Harmonix360 entities and forks.
+    The trap this contract exists to close, stated in PeoplePay360's own terms:
+    `contracts_active_period_overlap_excl` is predicated on
+    `WHERE (status = 'active')`, so a status-only UPDATE that sets a draft or
+    cancelled contract to active is *exactly* what moves a row into the
+    constrained set — and it looks completely harmless at the call site.
+    Remembering the guard on the INSERT path while skipping it on the UPDATE
+    path is the specific inconsistency this note exists to prevent; there is a
+    test pinning that exact case in
+    tests/test_contract_overlap_constraint.py.
+
+        EXCLUSION_VIOLATION_SQLSTATE = "23P01"
+
+        try:
+            return await self.create(contract, ...)
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if getattr(exc.orig, "sqlstate", None) == EXCLUSION_VIOLATION_SQLSTATE:
+                raise HTTPException(status_code=409, detail=...) from exc
+            raise
     """
 
     def __init__(self, session: AsyncSession, repo: BaseRepository[ModelT], entity_name: str):
