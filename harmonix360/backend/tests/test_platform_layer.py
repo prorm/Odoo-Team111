@@ -227,3 +227,32 @@ def test_platform_layer_modules_import_with_no_domain_entities():
     # only the AssetFlow tool set was removed.
     assert mcp_server.mcp is not None
     assert ws_manager.manager.channel_size("payroll") == 0
+
+
+# ---------------------------------------------------------- Department
+
+def test_department_carries_no_domain_specific_columns():
+    """Department is reused as-is by PeoplePay360 (Architecture §4, "reuse
+    existing model as-is"), so it must stay a plain organisational unit.
+
+    The exact column list is asserted rather than a "no column named asset_*"
+    heuristic, because the failure this guards against is someone hanging a
+    domain-specific field off the one table three domains share — and that
+    field will not necessarily be called anything obvious. When PeoplePay360
+    legitimately needs a new Department column, updating this list is the
+    deliberate step that makes it a decision rather than a drift.
+    """
+    assert {c.name for c in Department.__table__.columns} == {
+        "id",
+        "public_id",
+        "name",
+        "code",
+        "head_id",
+        "status",
+        "tenant_id",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    }
+    # The only FK is the department head, into users — nothing AssetFlow-shaped.
+    assert {str(fk.target_fullname) for c in Department.__table__.columns for fk in c.foreign_keys} == {"users.id"}
