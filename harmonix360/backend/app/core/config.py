@@ -71,8 +71,14 @@ class Settings(BaseSettings):
     # AI Providers
     GROQ_API_KEY: str = Field(default="", validation_alias="GROQ_API_KEY")
     CEREBRAS_API_KEY: str = Field(default="", validation_alias="CEREBRAS_API_KEY")
-    GROQ_MODEL: str = Field(default="llama-3.1-8b-instant", validation_alias="GROQ_MODEL")
-    CEREBRAS_MODEL: str = Field(default="llama3.1-8b", validation_alias="CEREBRAS_MODEL")
+    # Both providers retired the Llama 3.1 8B ids these defaults used to name
+    # (`llama-3.1-8b-instant` on Groq, `llama3.1-8b` on Cerebras). A retired id
+    # is a 404 `model_not_found`, and because that is a provider error the
+    # router treats it as a dead provider and falls through the whole chain —
+    # so every AI answer degraded to "unavailable" while the keys were valid.
+    # Verified against each provider's live /v1/models before being changed.
+    GROQ_MODEL: str = Field(default="openai/gpt-oss-120b", validation_alias="GROQ_MODEL")
+    CEREBRAS_MODEL: str = Field(default="gpt-oss-120b", validation_alias="CEREBRAS_MODEL")
     AI_CACHE_DEFAULT_TTL: int = Field(default=600, validation_alias="AI_CACHE_DEFAULT_TTL")
     AI_PROVIDER_TIMEOUT: int = Field(default=30, validation_alias="AI_PROVIDER_TIMEOUT")
     # Rate limits (requests per minute per provider)

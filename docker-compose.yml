@@ -39,6 +39,10 @@ x-backend-env: &backend-env
   # Optional; absent in the core profile by design.
   GROQ_API_KEY: ${GROQ_API_KEY:-}
   CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+  # Passed through so a retired model id can be corrected without a rebuild.
+  # Empty means "use the default in app/core/config.py".
+  GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+  CEREBRAS_MODEL: ${CEREBRAS_MODEL:-gpt-oss-120b}
   SENTRY_DSN: ${SENTRY_DSN:-}
   MCP_AGENT_API_KEY: ${MCP_AGENT_API_KEY:-peoplepay360-mcp-dev-key}
   # Off unless the advanced profile brings a collector up. With no collector

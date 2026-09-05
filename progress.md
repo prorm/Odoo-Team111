@@ -2785,3 +2785,126 @@ alarm waiting to happen.
 - **Nothing else.** No application module, migration, schema, router, service,
   dashboard, PDF or email file was touched on this branch — verifiable with
   `git diff --stat cd823a1..phase-11-prefix-tests`.
+
+---
+
+## 2026-09-06 — Closing the two verification gaps left open by final-integration
+
+Branch `verify/advanced-profile-and-ai-keys`, cut from `origin/main` (decc748).
+Both gaps that the integration report listed as unverified are now closed, and
+both are **PASS** — but closing the second one uncovered a defect that would
+have silently disabled the entire AI layer during the eval.
+
+### Gap 1 — the advanced profile, built genuinely from scratch: PASS
+
+The integration session verified the core profile against a warm, bind-mounted
+container. That proves nothing about the image. So:
+
+1. `docker compose --profile advanced down` (containers only — the `pgdata`
+   volume was deliberately **kept**, because wiping it destroys the hand-made
+   demo rows progress.md already documents, and nobody asked for that).
+2. `docker rmi` on all four project images. `odoo2026-mcp-server` was **13
+   hours old**, i.e. built before Phase 9 existed — exactly the staleness this
+   check was meant to catch.
+3. `docker compose --profile advanced build --no-cache` — a full rebuild with
+   no layer reuse, exit 0.
+4. `docker compose --profile advanced up -d --force-recreate` — all 8 services
+   up, backend healthy, `peoplepay360_mcp_server` listening on :8100.
+
+The fresh image imports `fastmcp`, `groq`, `cerebras.cloud.sdk`, `weasyprint`
+and `simpleeval`, so nothing Phase 5/9 added is missing from a clean build.
+
+`scripts/verify_advanced_profile.py` (added here) then drove the MCP server over
+a **real Streamable HTTP JSON-RPC handshake**, not a port check:
+
+- `initialize` → 200, server named itself, session id issued
+- `tools/list` → **19 tools**, and `compute` is absent — the AI still has no
+  write path to the rule engine
+- `get_employee` over MCP returned the real seeded employee
+- **a valid agent key acting for an HR Manager still gets
+  `403: Role 'hr_manager' is not authorized`** on `create_payrun` — the key
+  authenticates the process, it never widens the actor
+- a wrong `api_key` is refused
+
+A bare `GET /mcp` answers **406**, not the 400 the CI comment predicts. CI only
+checks that curl connects, so the job still passes, but the comment is now
+inaccurate for this FastMCP version (3.4.6).
+
+Full suite re-run against the fresh image on a clean database: **431 passed**.
+
+### Gap 2 — real model prose: PASS, after fixing a defect that blocked it
+
+`GROQ_API_KEY` and `CEREBRAS_API_KEY` were present in `.env` this session and
+**both authenticate** (`/v1/models` → 200 on each).
+
+**The defect.** With valid keys, every AI request still failed. Both configured
+default models had been **retired by their providers**:
+
+```
+GROQ     llama-3.1-8b-instant -> 404 model_not_found
+CEREBRAS llama3.1-8b          -> 404
+```
+
+A 404 is a provider error, so the router marks the provider dead and falls
+through the whole chain — meaning **every AI answer would have degraded to
+"unavailable" during the eval, with valid keys in place and nothing in the UI
+explaining why.** Dropping keys into `.env` alone would not have fixed it.
+
+Worse, `x-backend-env` passed `GROQ_API_KEY` but **not** `GROQ_MODEL`, so a
+`.env` override could never have reached the container. The committed default
+was the only thing that mattered.
+
+Fixed, minimally and with no new features:
+
+- `app/core/config.py` — defaults moved to `openai/gpt-oss-120b` (Groq) and
+  `gpt-oss-120b` (Cerebras), each verified against the provider's live
+  `/v1/models` first.
+- `docker-compose.yml` — `GROQ_MODEL`/`CEREBRAS_MODEL` now passed through, so a
+  future retirement can be corrected without a rebuild.
+- `.env.example` — documents the override and why a stale id is dangerous.
+
+No test referenced either model id, and the AI tests monkeypatch the keys in
+both directions, so they stay hermetic. **431 passed** after the change.
+
+**The demo then produced real prose.** `scripts/ai_demo.py`, end to end against
+the fresh stack, `provider=groq model=openai/gpt-oss-120b cached=False`:
+all checks passed across all three demos, including the propose → human confirm
+→ execute chain and its audit trail.
+
+Grounding was checked objectively, not by reading it and being impressed: every
+money-scale number in the prose was extracted and matched against the
+authoritative facts the context layer assembled. **All grounded.** The model
+also correctly kept the frozen `CONTRACT_WAGE` (25000.00) distinct from the
+contract's present wage (60000.00) — the two are different numbers in the facts
+and it did not conflate them.
+
+**It never touches a Payslip number.** `app/ai` and `app/mcp` contain zero
+occurrences of `Payslip(`, `PayslipLine(`, `.compute(`, `resolve_salary_structure`,
+`session.add` or `.flush()`; and a live sweep of four AI task types left the
+sha256 of all 9 payslips' gross, net and lines **byte-identical**.
+
+### The honest risk that remains: Groq free-tier TPM, and a dead fallback
+
+Running four AI questions at once reproduced this, live:
+
+```
+groq     429 Rate limit ... tokens per minute (TPM): Limit 8000, Used 5899
+cerebras 402 Payment required to access this resource
+→ All AI providers failed → clean ai_unavailable, facts intact
+```
+
+Two things follow, and both matter for the demo:
+
+- **The graceful-degradation path is now verified against real providers**, not
+  a stub. It behaves exactly as designed.
+- **The Cerebras fallback is dead** — the key authenticates but every completion
+  is 402, so there is effectively **one** provider, not two. Combined with an
+  8000 TPM ceiling, **asking several AI questions in quick succession during the
+  demo will hit "unavailable"**. Ask them one at a time, or add credit to either
+  provider. This is a live-demo risk, stated plainly rather than left unknown.
+
+### Note
+
+`scripts/ai_demo.py` creates an August payrun and a time-off request in the
+`peoplepay360` demo database by design. It was run twice here, so that database
+has moved further from pristine — the reset advice above still stands.
