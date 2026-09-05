@@ -138,6 +138,20 @@ negotiable: the contract non-overlap constraint and the advisory lock are
 properties of the database's constraint system and lock manager. Neither can be
 exercised against SQLite, and neither can be proven by a mock.
 
+Migration 018 and existing demo data: `app.seed` creates users, departments,
+and the demo salary structure; it does **not** create or regenerate payslips.
+Previously retained payslips without historical reference snapshots return
+409 `historical_snapshot_unavailable` on detail, list, and delivery reads.
+A list page containing one such row also returns 409. Re-running the seed
+does not fix it. Recompute draft/computed runs after correcting their inputs;
+validated/paid history requires actual historical evidence and must not be
+backfilled from today's contract. For a fresh demo, use a separately migrated
+and seeded database and create/compute its payrun through the payroll UI.
+Do not delete paid records to reset a demo. The Phase 6 dashboard still reads
+persisted totals and warnings directly, so these detail-read errors do not
+break its aggregate response. See `progress.md`'s dated integration record
+for the retained local rows and verification results.
+
 ---
 
 ## Five things worth knowing before you change anything
