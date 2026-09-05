@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     
     # Redis
     REDIS_URL: str = Field(default="redis://redis:6379/0", validation_alias="REDIS_URL")
+
+    #: Requests per minute per (client IP, path). Generous by default: a single
+    #: screen fires several requests — the Employee form alone loads the record,
+    #: its smart-button counts and a manager lookup — so a limit tuned to "one
+    #: request per user action" throttles ordinary use. Lower it deliberately
+    #: for an internet-facing deployment.
+    RATE_LIMIT_PER_MINUTE: int = Field(default=600, validation_alias="RATE_LIMIT_PER_MINUTE")
     
     # Security
     JWT_SECRET: str = Field(default="harmonix360-dev-jwt-secret-change-in-production", validation_alias="JWT_SECRET")
