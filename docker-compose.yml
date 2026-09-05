@@ -1,7 +1,7 @@
 # PeoplePay360 — one Compose file, two profiles (Architecture §12).
 #
 #   docker compose up --build
-#       The CORE profile: postgres, redis, backend, worker, frontend.
+#       The CORE profile: postgres, redis, backend, worker, frontend, mailhog.
 #       Everything PS §4 requires. Needs no Groq/Cerebras key, no MCP process
 #       and no SigNoz. This is what Phases 1-7 develop and demo against.
 #
@@ -27,6 +27,12 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://harmonix360_app:app_password@postgres:5432/peoplepay360
   MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/peoplepay360
   REDIS_URL: redis://redis:6379/0
+  SMTP_HOST: ${SMTP_HOST:-mailhog}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-payroll@peoplepay360.com}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
   JWT_SECRET: ${JWT_SECRET:-peoplepay360-dev-jwt-secret-change-in-production}
   HASHID_SALT: ${HASHID_SALT:-harmonix360-secret-salt-change-in-prod}
   ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -41,6 +47,11 @@ x-backend-env: &backend-env
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
 
 services:
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
   # ------------------------------------------------------------------ core
   postgres:
     image: postgres:16-alpine
@@ -92,6 +103,12 @@ services:
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
     volumes:
       - ./harmonix360/backend:/app
     depends_on:
@@ -113,11 +130,16 @@ services:
     command: >
       taskiq worker app.jobs.broker:broker
       app.jobs.tasks.ai_jobs
+      app.jobs.tasks.payroll_jobs
       --max-async-tasks 4
     environment: *backend-env
     volumes:
       - ./harmonix360/backend:/app
     depends_on:
+      backend:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:

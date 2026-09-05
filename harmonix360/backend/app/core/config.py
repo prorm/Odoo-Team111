@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     
     # Redis
     REDIS_URL: str = Field(default="redis://redis:6379/0", validation_alias="REDIS_URL")
+    # B8: MailHog locally; override for an authenticated SMTP relay.
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 1025
+    SMTP_FROM_ADDRESS: str = "payroll@peoplepay360.com"
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_STARTTLS: bool = False
+    PAYSLIP_FONT_DIR: str = "/usr/share/fonts/truetype/dejavu"
 
     #: Requests per minute per (client IP, path). Generous by default: a single
     #: screen fires several requests — the Employee form alone loads the record,

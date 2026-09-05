@@ -1,6 +1,6 @@
 # PeoplePay360 progress and handoff
 
-Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: dev.
+Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-5-payslip-pdf-email.
 Product name is PeoplePay360; source folders retain the Harmonix360 base name.
 
 ## Start here
@@ -1116,3 +1116,168 @@ new warning-generation policy.
 
 This is integration and verification only. Phase 5 PDF/email rendering and
 automated historical-snapshot restoration remain unimplemented.
+
+---
+
+## 2026-09-05 — Phase 5: shared payslip PDF and bulk email (PS B8)
+
+### Starting point and scope
+
+Fetched origin, read `origin/dev:progress.md` and the most recent 30 commits,
+and compared the documented phases with actual code before making changes.
+No new documentation/code discrepancy was found. Created
+`phase-5-payslip-pdf-email` from integration tip
+`cd823a17799c7d651066a51053e8db3e296ff3a2`, which includes gap-fix `1c98d0d`
+and the subsequent legacy-409 verification. Read PRD §4 B8, Architecture §1,
+the actual Payslip/PayslipLine models, historical serializer, and existing
+router/Taskiq patterns including Phase 4's exact `send_payslips` payload.
+
+Work lives at `C:\Users\csepr\peoplepay360-integration`. The original OneDrive
+IDE checkout still has the previously documented stale Git state; it was not
+reset or modified. This phase is committed and pushed on its own branch;
+it must be integrated before a later agent assumes Phase 5 exists on dev.
+Phases 1–4 and 6 were inherited; Phase 5 is implemented below. Phase 7 and
+the optional platform phases are not implemented by this change.
+
+### Implemented behavior and decisions
+
+- **One document source:** `templates/payslip.html.j2` renders both View
+  calculation's HTML iframe and WeasyPrint's PDF. It renders every persisted
+  PayslipLine in sequence, with name, code, category and amount, including
+  `PP360_LOP`. Both renderers use the same embedded DejaVu regular/bold fonts
+  to avoid host font substitutions. Decimal amounts are formatted, never
+  recomputed. Gross/net, wage, employee and payrun references come from the
+  existing historical serializer. Jinja autoescaping is enabled; PDF rendering
+  allows only embedded font data and cannot fetch HTTP or filesystem resources.
+- **Preview/print:** `GET /api/v1/payslips/{id}/preview` supports computed
+  history for the existing View calculation flow. `GET .../{id}/pdf` returns
+  an attachment only for validated/paid slips (otherwise 409). Admin, HR
+  Payroll Manager and HR Payroll User may use the document/status endpoints;
+  Employee and HR Manager get 403, matching payroll permissions. Warnings are
+  excluded from template input and stay in the surrounding application UI.
+- **Bulk delivery:** the existing paid-only POST
+  `/api/v1/payruns/{id}/send-payslips`, its 202 response, and its enqueue
+  payload are unchanged. New Taskiq task `send_payslips` consumes exactly
+  `{payrun_id, payrun_name, period_start, period_end, payslips}` with existing
+  `{payslip_id, employee_id, work_email, net_amount, gross_amount}` entries.
+  Monetary payload values remain strings. The dispatcher publishes one
+  `deliver_payslip` job per employee; each persisted delivery retains the
+  same contract with a one-item payslips array. Recipient and amounts are
+  verified against the stored snapshot before rendering/sending.
+- **Independent status:** migration 019 adds `payslip_deliveries`, separate
+  from immutable payroll data. One row per payslip records pending/sent/failed,
+  error, attempts and timestamps. Pending rows commit before child publication.
+  An individual enqueue, address, render or SMTP failure does not stop other
+  employees. `GET /api/v1/payruns/{id}/deliveries` drives the Payrun table's
+  polling status column. Before first dispatch the UI shows Not queued.
+- **Retries:** repeated Send skips sent rows and requeues pending/failed ones.
+  Row locks serialize duplicate child execution through SMTP/result commit.
+  A stopped worker can leave a pending row; Send requeues it. `sent` means
+  SMTP acceptance, not confirmed inbox delivery. SMTP has no exactly-once
+  transaction with PostgreSQL: a crash after acceptance but before commit can
+  duplicate mail on explicit retry. No automatic recovery daemon was added.
+  Recipient addresses remain historical snapshots; changing today's employee
+  email does not silently redirect an already-paid payslip.
+- **Local mail:** MailHog is in both Compose profiles, with loopback SMTP 1025
+  and mailbox UI 8025. Compose defaults SMTP_HOST to mailhog; native processes
+  default to localhost. `.env.example` intentionally leaves SMTP_HOST commented
+  so copying it does not replace the Compose hostname with localhost. Worker
+  startup waits for the backend to finish migrations/seed. The backend image
+  includes Pango/Harfbuzz/DejaVu and installs the pinned requirements export.
+- **Legacy history:** migration 019 does not rewrite Payslip or PayslipLine.
+  Snapshot-less historical documents retain the explicit migration-018 409;
+  no restoration/backfill or deletion of paid demo history was performed.
+
+### Files created or modified
+
+Backend paths below are relative to `harmonix360/backend/`:
+
+- Created `templates/payslip.html.j2`, `app/services/payslip_documents.py`,
+  and `app/api/v1/routers/payslip_documents.py` for shared rendering and reads.
+- Created `app/models/payslip_delivery.py`,
+  `alembic/versions/019_payslip_delivery.py`,
+  `app/services/payslip_delivery.py`, and `app/jobs/tasks/payroll_jobs.py`
+  for delivery state, independent jobs and SMTP.
+- Created `tests/test_payslip_documents.py` (10 collected cases) and the
+  opt-in `scripts/verify_payslip_delivery.py` local acceptance harness.
+- Modified `app/models/__init__.py`, `app/main.py`, and `app/core/config.py`
+  only to register the new model/router and configure SMTP/fonts.
+- Modified `pyproject.toml`, `uv.lock`, `requirements.txt`,
+  `requirements-dev.txt`, and `Dockerfile` for Jinja2/WeasyPrint/aiosmtplib,
+  dev-only PDF/SMTP verification dependencies, and native rendering libraries.
+  Created `.dockerignore` to keep generated payroll artifacts and local
+  environments/caches out of the backend image.
+- Frontend: created `src/hooks/usePayslipDocuments.ts` and
+  `src/routes/payroll/PayslipDocument.tsx`; modified
+  `src/routes/payroll/PayslipDetail.tsx` to use the shared document,
+  `src/routes/payroll/PayrunDetailPage.tsx` to display email status, and
+  `vite.config.ts` to allow an optional local API proxy port override.
+- Root: modified `docker-compose.yml`, `.env.example`, `.gitignore`
+  (generated artifacts), `README.md` (setup, endpoints, retries and acceptance
+  reproduction), and this `progress.md` handoff.
+
+### Tests and actual UI/SMTP verification
+
+- Full suite: **349 passed in 185.64 seconds**, zero failures/skips
+  (339 inherited + 10 new); only the inherited passlib/crypt deprecation remains.
+  The new cases cover shared-template PDF/HTML equality and ordered LOP lines,
+  warnings absent from documents, computed print rejection, validated/paid
+  downloads, byte-identical HTML/PDF after successful live wage/name changes,
+  five-role endpoint allow/deny, legacy 409, a real SMTP 550 failure isolated
+  from two successful sends, concurrent duplicate child execution, retrying
+  only failed deliveries, child enqueue failure isolation, and unpaid dispatch
+  rejection. Existing payroll golden tests were not modified.
+  Final focused run after strengthening successful-mutation assertions:
+  **10 passed in 41.09 seconds**.
+- Frontend `npm run build` passes TypeScript (`tsc -b`) and Vite production
+  build. Existing large-bundle advisory remains. Black and targeted Ruff checks
+  pass for all new Python files; `git diff --check` passes. Both core and
+  advanced Compose configurations validate, including with `.env.example`.
+  Built the backend image successfully with pinned dependencies.
+- Migrated two separate PostgreSQL databases from empty through 019 and seeded
+  before testing. Full suite uses `peoplepay360_phase5_suite` with the application
+  role and Redis database 6. `peoplepay360_phase5_tests` holds only synthetic
+  manual demo fixtures and uses Redis database 5. PostgreSQL/Redis host ports
+  are 5432/6379. Neither the retained legacy development history nor live
+  `.env` credentials were modified.
+- Real UI verification used Edge through Playwright against Vite on 5176 and
+  backend on 8015, logged in as HR Payroll Manager. The actual payrun
+  `prun_OxKqzQgA` has three real employees and paid payslips. Opened View
+  calculation, inspected the shared preview, downloaded using Print Payslip,
+  and confirmed downloaded bytes equal the API-generated sample. Visually
+  inspected the PDF page and preview: all six rules and amounts match.
+  Example Asha payslip `pslip_jqQ4jL2l`: March 2025, wage `30000.00`, 21 schedule
+  working days, 3 unpaid days, LOP `4285.71`, HRA `12000.00`, gross `42000.00`,
+  professional tax `200.00`, net `37514.29`. No warnings appear on the document.
+- Clicked Send payslips through the UI with the actual Redis/Taskiq worker.
+  **Two employees sent, one failed**, with a clear SMTP rejection on only the
+  failing row and no browser page errors. MailHog's API independently confirms
+  exactly two accepted fixture recipients and exactly one real PDF attachment
+  per message, each containing the LOP code/amount and expected net.
+  MailHog normally accepts every address, so a local SMTP proxy deliberately
+  returns 550 for the fixture's nonexistent third mailbox and forwards the
+  other two to MailHog. This is explicit protocol-level fault injection, not
+  a claim that MailHog checks whether mailboxes exist. No external SMTP was used.
+- Local ignored evidence under `harmonix360/backend/artifacts/`:
+  `phase5-sample.pdf`, `phase5-preview.html`, `phase5-pdf.png`,
+  `phase5-ui-download.pdf`, `phase5-ui-preview.png`,
+  `phase5-preview-document.png`, `phase5-ui-deliveries.png`, and
+  `phase5-fixture.json`. Recreate with the committed opt-in harness; generated
+  synthetic payroll artifacts are not committed as application assets.
+
+### No Phase 4/6 interference and next-agent guidance
+
+Diff against the starting integration commit confirms **no changes** to
+payroll computation/context/resolver, existing payroll model/schema/router,
+historical serializer, send enqueue contract, seed salary rules, or any Phase 6
+dashboard backend/frontend file. Changes to existing payroll React screens
+only connect shared document rendering and show delivery state. All inherited
+339 tests continue passing. Platform/intelligence integrations remain dormant.
+
+Apply migration 019 and rebuild backend/worker dependencies before using this
+branch. Fetch this branch or its eventual integration on origin/dev before
+continuing. Use a fresh migrated/seeded database for demos with printable
+payslips; migration 018 still cannot reconstruct missing historical snapshots.
+For the local acceptance fixture, README and the script docstring explain the
+SMTP rejection proxy and isolated worker configuration. Phase 7 and optional
+platform work remain outside this phase.
