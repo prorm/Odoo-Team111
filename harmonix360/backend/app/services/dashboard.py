@@ -72,7 +72,7 @@ CONTRACT_EXPIRY_HORIZON_DAYS = 30
 #: dashboard has not been taught about is a new Phase 4 warning, and silently
 #: relabelling it is how a blocking payroll issue stops being visible.
 _PHASE4_BLOCKING_CODES = frozenset(
-    {"missing_bank_details", "missing_checkout", "contract_gap", "duplicate_payslip", "no_payslip"}
+    {"missing_bank_details", "missing_checkout", "contract_gap", "duplicate_payslip", "no_payslip", "lop_schedule_unavailable", "historical_snapshot_unavailable"}
 )
 _PHASE4_ADVISORY_CODES = frozenset({"structure_mismatch", "no_attendance"})
 _PHASE4_WARNING_CODES = _PHASE4_BLOCKING_CODES | _PHASE4_ADVISORY_CODES

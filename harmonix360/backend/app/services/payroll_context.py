@@ -8,11 +8,11 @@ values, so the payslip a payrun produces can be reasoned about — and tested �
 without a request in flight. `app/services/payroll.py` owns the transaction,
 the advisory lock and the writes; this module owns *what the numbers mean*.
 
-Nothing here computes money. Money is `resolve_salary_structure`'s job
-(Phase 3, `app/services/salary_resolver.py`) and this phase does not
-reimplement one line of it. What this module produces is the `seed_context`
-that function consumes: exactly the names in `SEED_CONTEXT_NAMES`, every value
-a `Decimal`.
+This module computes payroll inputs, including the schedule-based LOP amount.
+Executing salary rules remains `resolve_salary_structure`'s job; no rule
+arithmetic is reimplemented here. What this module produces is the `seed_context`
+that function consumes: a usable context has exactly `SEED_CONTEXT_NAMES`,
+every value a `Decimal`. Decision 4 documents unavailable-input behavior.
 
 THE THREE SEMANTICS THIS FILE DECIDES
 -------------------------------------
@@ -54,12 +54,26 @@ open, and each is stated here rather than left implicit in a query:
    that is both attended and on approved leave counts in both numbers. How to
    combine them is the salary structure author's decision, expressed in a
    formula — not a policy this module hardcodes into the inputs.
+
+4. **LOP_AMOUNT uses scheduled working days, never calendar-day proration.**
+   LOP_AMOUNT = (CONTRACT_WAGE / SCHEDULE_WORKING_DAYS_IN_PERIOD)
+                * UNPAID_LEAVE_DAYS, rounded once to 2 places ROUND_HALF_UP.
+   Count each inclusive period date whose existing schedule_expectations
+   reports positive net hours, using the contract override or employee default.
+   Multiple shifts still count as one day. No duplicate schedule calculation.
+   Missing/deleted schedules (unknown hours) or zero working days produce a
+   BLOCKING lop_schedule_unavailable warning, even if unpaid leave is zero.
+   LOP_AMOUNT is OMITTED in that case: neither zero nor a fallback is invented.
+   Rules independent of LOP can still produce lines, with this warning blocking
+   Validate. A structure consuming LOP is skipped for that employee; its warning
+   is persisted on the payrun and exposed by the same validation firewall.
+   Fix the schedule and recompute. Existing finalized records are not repriced.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Optional, Sequence
 
 from sqlalchemy import or_, select
@@ -140,6 +154,15 @@ class PayrollContext:
     seed: dict[str, Decimal] = field(default_factory=dict)
     attendance: AttendanceFacts = field(default_factory=lambda: AttendanceFacts(Decimal("0.00")))
     leave: LeaveFacts = field(default_factory=lambda: LeaveFacts(Decimal("0.00")))
+    lop_warning: PayrollWarning | None = None
+
+
+class PayrollContextError(Exception):
+    """An unavailable payroll input prevents evaluating a consuming structure."""
+
+    def __init__(self, warning: PayrollWarning):
+        self.warning = warning
+        super().__init__(warning.message)
 
 
 class ContractResolutionError(Exception):
@@ -348,8 +371,9 @@ async def build_payroll_context(
 ) -> PayrollContext:
     """Architecture §7 step 3, assembled.
 
-    The returned `seed` dict has EXACTLY the keys in `SEED_CONTEXT_NAMES` and
-    every value is a `Decimal`. It is passed verbatim to
+    A usable context has exactly SEED_CONTEXT_NAMES, every value a Decimal.
+    An undetermined LOP_AMOUNT is omitted and accompanied by a blocking warning,
+    rather than substituted with a fabricated number. The dict is passed to
     `resolve_salary_structure`; a structure's formulas may reference any of
     these names, and `validate_structure_rule_order` already refused, at save
     time, any structure referencing a name outside this set.
@@ -364,18 +388,36 @@ async def build_payroll_context(
     )
     leave = await leave_facts(session, employee, period_start, period_end)
 
+    expected = [
+        schedule_expectations(employee, day, schedule=contract.working_schedule)[1]
+        for day in period_days(period_start, period_end)
+    ]
+    working_days = sum(1 for hours in expected if hours is not None and hours > 0)
+    wage = Decimal(contract.wage).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    lop_warning = None
+    seed = {
+        "WORKED_DAYS": facts.worked_days,
+        "CONTRACT_WAGE": wage,
+        "UNPAID_LEAVE_DAYS": leave.unpaid_leave_days,
+    }
+    if not working_days or any(hours is None for hours in expected):
+        lop_warning = PayrollWarning(
+            code="lop_schedule_unavailable",
+            severity=BLOCKING,
+            message=(f"{employee.full_name} has zero or undetermined scheduled working days "
+                     "in this period. LOP_AMOUNT cannot be calculated; fix the schedule and recompute."),
+            references=(employee.public_id, contract.public_id),
+        )
+    else:
+        seed["LOP_AMOUNT"] = (wage / Decimal(working_days) * leave.unpaid_leave_days).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
     return PayrollContext(
-        seed={
-            "WORKED_DAYS": facts.worked_days,
-            # Numeric(12,2) on the column; quantized here so a wage that
-            # arrived with more places (it cannot from the DB, but can from a
-            # hand-built object in a test) cannot widen every downstream
-            # amount.
-            "CONTRACT_WAGE": Decimal(contract.wage).quantize(Decimal("0.01")),
-            "UNPAID_LEAVE_DAYS": leave.unpaid_leave_days,
-        },
+        seed=seed,
         attendance=facts,
         leave=leave,
+        lop_warning=lop_warning,
     )
 
 
@@ -429,7 +471,7 @@ def warning_checks(
     database, and so the same checks can later be run in "preview" mode by
     PRD §5.10's Revalidate action without recomputing anything.
     """
-    warnings: list[PayrollWarning] = []
+    warnings: list[PayrollWarning] = [context.lop_warning] if context.lop_warning else []
 
     # -- missing bank details (PRD §5.10, blocking) -------------------------
     # `bank_account` is a plain account string (PRD §8's stated assumption).

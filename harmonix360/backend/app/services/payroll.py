@@ -75,13 +75,20 @@ from app.services.base import BaseService
 from app.services.payroll_context import (
     BLOCKING,
     ContractResolutionError,
+    PayrollContextError,
     blocking_summary,
     build_payroll_context,
     overlapping_payslip_ids,
     resolve_period_contract,
     warning_checks,
 )
-from app.services.salary_resolver import FormulaEvaluationError, ResolvedRule, resolve_salary_structure
+from app.services.payslip_snapshot import capture_references, payslip_response
+from app.services.salary_resolver import (
+    FormulaEvaluationError,
+    ResolvedRule,
+    resolve_salary_structure,
+    validate_formula_syntax,
+)
 
 logger = logging.getLogger("harmonix360.services.payroll")
 
@@ -334,6 +341,7 @@ class PayrunService(BaseService[Payrun]):
 
         computed: list[Payslip] = []
         skipped: list[dict] = []
+        computation_warnings: list[dict] = []
 
         for selection in payrun.selected_employees:
             employee = selection.employee
@@ -355,16 +363,18 @@ class PayrunService(BaseService[Payrun]):
                 )
                 continue
 
-            payslip = await self._compute_one(
-                payrun=payrun,
-                employee=employee,
-                contract=contract,
-                structure=structure,
-                rule_meta=rule_meta,
-                now=now,
-            )
+            try:
+                payslip = await self._compute_one(
+                    payrun=payrun, employee=employee, contract=contract,
+                    structure=structure, rule_meta=rule_meta, now=now,
+                )
+            except PayrollContextError as exc:
+                computation_warnings.append({**exc.warning.as_dict(), "employee_id": employee.public_id})
+                skipped.append({"employee_id": employee.public_id, "employee_name": employee.full_name, "reason": str(exc)})
+                continue
             computed.append(payslip)
 
+        payrun.computation_warnings = computation_warnings
         payrun.status = PayrunStatus.COMPUTED
         # A recompute replaces every payslip in the run, which is a material
         # change even when the status letter does not move (COMPUTED ->
@@ -375,6 +385,8 @@ class PayrunService(BaseService[Payrun]):
         await self._flush_or_conflict()
 
         blocking = self._aggregate_blocking(computed)
+        for finding in computation_warnings:
+            blocking[finding["code"]] = blocking.get(finding["code"], 0) + 1
         await self.audit(
             actor_email,
             "COMPUTE_PAYRUN",
@@ -409,6 +421,14 @@ class PayrunService(BaseService[Payrun]):
         context = await build_payroll_context(
             self.session, employee, contract, payrun.period_start, payrun.period_end, now=now
         )
+        if context.lop_warning:
+            for link in structure.rule_links:
+                rule = link.salary_rule
+                if rule.is_active and (
+                    rule.percentage_base_code == "LOP_AMOUNT"
+                    or (rule.expression and "LOP_AMOUNT" in validate_formula_syntax(rule.expression))
+                ):
+                    raise PayrollContextError(context.lop_warning)
 
         # Step 4 — THE Phase 3 resolver. Not reimplemented, not wrapped in
         # arithmetic of our own: the list it returns is the payslip.
@@ -456,6 +476,8 @@ class PayrunService(BaseService[Payrun]):
             # keep showing March's contract after it is superseded
             # (app/models/payroll.py, Architecture §5.8's time machine).
             contract_id=contract.id,
+            reference_snapshot=capture_references(employee, contract, payrun),
+            context_snapshot={key: str(value) for key, value in context.seed.items()},
             worked_days=context.attendance.worked_days,
             gross_amount=gross,
             net_amount=net,
@@ -553,8 +575,21 @@ class PayrunService(BaseService[Payrun]):
         blocking = 0
         advisory = 0
         by_code: dict[str, int] = {}
+        for finding in payrun.computation_warnings or []:
+            issues.append({**finding, "payslip_id": None})
+            blocking += 1
+            by_code[finding["code"]] = by_code.get(finding["code"], 0) + 1
 
         for payslip in payslips:
+            if payslip.reference_snapshot is None:
+                issues.append({
+                    "code": "historical_snapshot_unavailable", "severity": BLOCKING,
+                    "message": "Legacy payslip has no reference snapshot; recompute before finalization.",
+                    "references": [payslip.public_id], "payslip_id": payslip.public_id,
+                    "employee_id": payslip.employee.public_id,
+                })
+                blocking += 1
+                by_code["historical_snapshot_unavailable"] = by_code.get("historical_snapshot_unavailable", 0) + 1
             for entry in payslip.warnings or []:
                 issues.append(
                     {
@@ -583,8 +618,7 @@ class PayrunService(BaseService[Payrun]):
                     "severity": BLOCKING,
                     "message": (
                         f"{selection.employee.full_name} is selected into this payrun but has no "
-                        "payslip — no active contract covered the period, so payroll could not "
-                        "resolve what they are paid."
+                        "payslip — payroll could not resolve a required contract or computation input."
                     ),
                     "references": [selection.employee.public_id],
                     "payslip_id": None,
@@ -720,15 +754,16 @@ class PayrunService(BaseService[Payrun]):
                 detail=f"Payrun {payrun.public_id} has no payslips to send.",
             )
 
+        snapshots = [payslip_response(payslip) for payslip in payslips]
         payload = {
-            "payrun_id": payrun.public_id,
-            "payrun_name": payrun.name,
-            "period_start": str(payrun.period_start),
-            "period_end": str(payrun.period_end),
+            "payrun_id": snapshots[0].payrun.id,
+            "payrun_name": snapshots[0].payrun.name,
+            "period_start": str(snapshots[0].payrun.period_start),
+            "period_end": str(snapshots[0].payrun.period_end),
             "payslips": [
                 {
-                    "payslip_id": payslip.public_id,
-                    "employee_id": payslip.employee.public_id,
+                    "payslip_id": payslip.id,
+                    "employee_id": payslip.employee.id,
                     "work_email": payslip.employee.work_email,
                     # str(), never float — Architecture §6/§10. A Decimal does
                     # not survive JSON as a Decimal, and the one lossy step in
@@ -736,7 +771,7 @@ class PayrunService(BaseService[Payrun]):
                     "net_amount": str(payslip.net_amount),
                     "gross_amount": str(payslip.gross_amount),
                 }
-                for payslip in payslips
+                for payslip in snapshots
             ],
         }
 

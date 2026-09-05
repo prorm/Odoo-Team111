@@ -55,6 +55,9 @@ class Payrun(AuditedEntity, Base):
     """
 
     __tablename__ = "payruns"
+    #: Blocking context failures for selected employees whose LOP-dependent
+    #: structure cannot produce a payslip. Replaced on every compute.
+    computation_warnings: Mapped[Optional[list[Any]]] = mapped_column(JSONB, nullable=True)
 
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     salary_structure_id: Mapped[int] = mapped_column(
@@ -108,6 +111,10 @@ class Payslip(AuditedEntity, Base):
     """One employee's result for one payrun (PS B7)."""
 
     __tablename__ = "payslips"
+    #: Historical public references and Decimal-string context, captured once
+    #: by compute. Nullable only for legacy rows without recoverable snapshots.
+    reference_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    context_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     payrun_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("payruns.id"), nullable=False, index=True)
     employee_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("employees.id"), nullable=False, index=True)

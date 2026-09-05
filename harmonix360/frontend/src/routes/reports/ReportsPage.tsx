@@ -80,6 +80,8 @@ function money(value: string): string {
  * `no_payslip`, which Phase 4 derives at Validate time.
  */
 const WARNING_LABELS: Record<string, string> = {
+  lop_schedule_unavailable: 'Working schedule required for loss of pay',
+  historical_snapshot_unavailable: 'Historical payslip snapshot unavailable',
   missing_bank_details: 'Missing bank details',
   missing_checkout: 'Missing check-out',
   contract_gap: 'Contract gap',

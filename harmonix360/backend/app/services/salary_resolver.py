@@ -53,7 +53,7 @@ HUNDRED = Decimal("100")
 #: input (not yet in this set) is a Phase 4 change to this constant, made
 #: deliberately, not something a structure author can introduce by typing it
 #: into a formula.
-SEED_CONTEXT_NAMES = frozenset({"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS"})
+SEED_CONTEXT_NAMES = frozenset({"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS", "LOP_AMOUNT"})
 
 #: The only AST node types a formula may contain: a bare arithmetic
 #: expression over names and numbers. No calls, no attribute access, no

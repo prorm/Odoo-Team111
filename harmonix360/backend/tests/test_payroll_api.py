@@ -93,6 +93,27 @@ async def make_contract(client, employee_id: str, *, wage: str, **overrides) -> 
     return response.json()
 
 
+async def attach_working_schedule(client, employee_id: str) -> dict:
+    """Explicit Mon-Fri schedule for tests asserting a finalizable run.
+
+    LOP's denominator is required now. Existing golden tests deliberately keep
+    their original inputs; only clean/finalization fixtures call this helper.
+    cleanup_payroll depends on cleanup_schedules to remove these rows.
+    """
+    response = await client.post("/api/v1/working-schedules/", headers=HR_MANAGER, json={
+        "name": "Payroll test weekdays", "lines": [
+            {"day_of_week": day, "start_time": "09:00", "end_time": "17:00", "break_minutes": 0}
+            for day in ("monday", "tuesday", "wednesday", "thursday", "friday")
+        ],
+    })
+    assert response.status_code == 201, response.text
+    schedule = response.json()
+    response = await client.patch(f"/api/v1/employees/{employee_id}", headers=HR_MANAGER,
+        json={"default_schedule_id": schedule["id"]})
+    assert response.status_code == 200, response.text
+    return schedule
+
+
 async def make_rule(client, code: str, method: SalaryRuleComputation, category: SalaryRuleCategory, **fields):
     body = {
         "name": code.replace("_", " ").title(),
@@ -411,27 +432,9 @@ def test_the_context_this_phase_builds_uses_exactly_phase_3s_vocabulary():
     that name would pass validation at save time and fail at run time — the
     exact failure mode Phase 3 designed the constant to make impossible.
     """
-    import ast
-    import inspect
-
-    from app.services.payroll_context import build_payroll_context
-
-    assert SEED_CONTEXT_NAMES == {"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS"}
-
-    # The keys the builder actually constructs, read out of its source. A
-    # docstring claim would not fail when someone adds a fourth key; this
-    # does.
-    tree = ast.parse(inspect.getsource(build_payroll_context).lstrip())
-    seed_dicts = [
-        keyword.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        for keyword in node.keywords
-        if keyword.arg == "seed" and isinstance(keyword.value, ast.Dict)
-    ]
-    assert seed_dicts, "build_payroll_context no longer constructs a seed= dict literal"
-    for seed in seed_dicts:
-        assert {key.value for key in seed.keys} == SEED_CONTEXT_NAMES
+    assert SEED_CONTEXT_NAMES == {"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS", "LOP_AMOUNT"}
+    # The new LOP golden test checks the actual built context and Decimal
+    # values; unavailable LOP is explicitly omitted with a blocking warning.
 
 
 # ===========================================================================
@@ -894,6 +897,7 @@ async def test_validate_refuses_while_blocking_issues_stand_and_passes_once_clea
     failure can render the reason without a second request.
     """
     employee = await make_employee(client, bank_account=None)
+    await attach_working_schedule(client, employee["id"])
     await make_contract(client, employee["id"], wage="30000.00")
     rule = await make_rule(
         client, "FLAT", SalaryRuleComputation.FIXED, SalaryRuleCategory.NET, amount="500.00"
@@ -951,6 +955,7 @@ async def test_advisory_warnings_do_not_block_validation(
     run still validates — an absent month is a real payroll outcome, not an
     error."""
     employee = await make_employee(client)
+    await attach_working_schedule(client, employee["id"])
     await make_contract(client, employee["id"], wage="30000.00")
     rule = await make_rule(
         client, "FLAT", SalaryRuleComputation.FIXED, SalaryRuleCategory.NET, amount="500.00"
@@ -983,6 +988,7 @@ async def test_advisory_warnings_do_not_block_validation(
 async def _clean_run(client) -> tuple[dict, dict]:
     """A payrun with one clean, warning-free payslip, computed and validated."""
     employee = await make_employee(client)
+    await attach_working_schedule(client, employee["id"])
     await make_contract(client, employee["id"], wage="30000.00")
     await make_attendance(client, employee["id"], date(2025, 3, 3))
     rule = await make_rule(

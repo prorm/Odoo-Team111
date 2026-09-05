@@ -49,6 +49,7 @@ from app.schemas.payroll import (
     PayslipResponse,
 )
 from app.services.payroll import PayrunService, PayslipService
+from app.services.payslip_snapshot import payslip_response
 
 router = APIRouter(dependencies=[Depends(rate_limiter)])
 
@@ -77,10 +78,9 @@ async def _respond_payruns(service: PayrunService, payruns: List[Payrun]) -> Lis
 
 
 def _payslip_response(payslip: Payslip) -> PayslipResponse:
-    # `payrun` comes straight off the relationship — every payslip read path
-    # loads it eagerly (`_PAYSLIP_LOADS`), so no lazy load happens inside
-    # Pydantic's synchronous attribute access.
-    return PayslipResponse.model_validate(payslip)
+    # Public references come from compute-time snapshots. Monetary lines are
+    # eagerly loaded by every read path; no live contract enters this response.
+    return payslip_response(payslip)
 
 
 # ------------------------------------------------------------------- payruns

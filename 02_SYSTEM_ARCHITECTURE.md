@@ -174,6 +174,7 @@ All entities except pure line-item children get `AuditedEntity` (audit + `versio
 - **Advisory lock**: `acquire_entity_lock(session, "payrun", payrun_id)` wraps Payrun Compute.
 - **Idempotency-Key**: required on Payrun create + compute.
 - **Money**: `Numeric(12,2)` end to end, `Decimal` in every layer, `str()` across any JSON boundary (Taskiq payload, MCP tool response, AI prompt context).
+- **Historical immutability**: Compute persists public employee/contract/payrun references in `Payslip.reference_snapshot` and Decimal input strings in `Payslip.context_snapshot`, in the same transaction as `PayslipLine` and totals. Detail/list/calculation reads and the delivery boundary use the shared snapshot serializer; future PDF workers must use it too. Later contract wages/effective dates or employee edits cannot change an already-paid payload. Migration 018 leaves legacy snapshot columns null: reads return `historical_snapshot_unavailable` (409), and Validate blocks until an unfinalized run is recomputed. Never backfill finalized history from mutable live references; historical evidence is required. Persisted monetary rows remain untouched.
 
 This holds regardless of entry point: an MCP `create_payrun` tool call and offline-synced attendance both flow through the identical constrained/audited service methods — see §11.
 
@@ -187,6 +188,12 @@ This holds regardless of entry point: an MCP `create_payrun` tool call and offli
 4. Execute each `SalaryRule` in sequence (fixed / percentage / `simpleeval` formula), storing each result under its `code` so later rules can reference it.
 5. Categorize into Basic/Allowances/Gross/Deductions/Net.
 6. Run warning checks (missing bank details, duplicate payslip, contract gap) → `Payslip.warnings`.
+
+**LOP input:** `LOP_AMOUNT = (CONTRACT_WAGE / SCHEDULE_WORKING_DAYS_IN_PERIOD) * UNPAID_LEAVE_DAYS`. `build_payroll_context` counts inclusive period dates with positive net hours returned by `attendance.schedule_expectations`, using the contract schedule override or employee default; multiple shifts count as one date. All arithmetic is Decimal; quantize the final LOP to `0.01` with `ROUND_HALF_UP`, without rounding the intermediate daily rate. The demo salary structure includes a Loss of Pay deduction rule referencing this input.
+
+**Unavailable LOP:** Missing/deleted schedules or zero scheduled working days produce a BLOCKING `lop_schedule_unavailable` warning, even with zero unpaid leave. Omit `LOP_AMOUNT`; never substitute zero or a fallback denominator. A structure that consumes LOP cannot produce a payslip for that employee: persist the finding in `Payrun.computation_warnings` and surface it through the validation firewall. Structures independent of LOP can compute their lines but retain the same blocking finding on the payslip. Fix the schedule and recompute.
+
+**Checkout firewall:** A stored `missing_checkout` finding is BLOCKING and prevents Validate (409). Attendance correction must be followed by recomputation to replace that finding; editing attendance alone cannot bypass the gate. This preserves Phase 4's existing warning/check/transition behavior.
 
 **AI is architecturally incapable of writing to `Payslip`/`PayslipLine`.** The AI layer and MCP tools can *read* payslip data and *narrate* it (§8.1, §8.6); no AI code path calls the rule engine's write methods.
 

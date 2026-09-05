@@ -212,7 +212,7 @@ async def cleanup_salary_config():
 
 
 @pytest_asyncio.fixture
-async def cleanup_payroll():
+async def cleanup_payroll(cleanup_schedules):
     """Deletes every Payrun (with its selection, payslips and payslip lines)
     created during a test.
 

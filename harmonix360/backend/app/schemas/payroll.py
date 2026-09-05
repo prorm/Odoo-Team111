@@ -39,6 +39,7 @@ class ContractRef(ORMModel):
     """The contract a payslip was computed against, as it appears on the
     payslip.
 
+    Read from the persisted reference snapshot, never the live Contract.
     Carries `wage` because it is the payslip's own `CONTRACT_WAGE` input and
     PS B7 asks for a breakdown a person can follow: showing the rule results
     without the wage they came from makes the top line unexplainable. Anyone

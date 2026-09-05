@@ -135,6 +135,8 @@ export interface DeliveryResult {
  *  "categorized" issue list). Falls back to the raw code, so a warning added
  *  server-side still renders rather than disappearing. */
 export const WARNING_LABELS: Record<string, string> = {
+  lop_schedule_unavailable: 'Working schedule required for loss of pay',
+  historical_snapshot_unavailable: 'Historical payslip snapshot unavailable',
   missing_bank_details: 'Missing bank details',
   missing_checkout: 'Missing check-out',
   contract_gap: 'Contract does not cover the period',

@@ -1,6 +1,6 @@
 # PeoplePay360 progress and handoff
 
-Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: dev.
+Updated: 2026-09-05. Repository: prorm/Odoo-Team111; working branch: phase-4-gap-fixes.
 Product name is PeoplePay360; source folders retain the Harmonix360 base name.
 
 ## Start here
@@ -860,3 +860,164 @@ product behaviour changed.
 - Frontend typecheck + production build pass. `npm install` is required after
   this rebase: Phase 6 added `recharts` to `package.json`, so a `node_modules`
   from before the rebase fails `tsc` with TS2307.
+
+---
+
+## 2026-09-05 — Phase 4 gap fixes and paid-reference snapshot bug
+
+### Starting point and authorization
+
+- Fetched and read `origin/dev:progress.md`, and compared the latest 30 log
+  entries and the relevant implementation against its phase claims before
+  editing. Base commit: `276ce889339123a4b55e834ccb3b283c1753cabb`, the
+  dashboard/warning-shape integration. Phases 1–4 and 6 are integrated;
+  Phase 5 PDF/email rendering and the optional platform phases are not.
+- The unmodified integration tip passed **329 tests in 51.22 seconds** on
+  real PostgreSQL/Redis. Its persisted line amounts and dashboard monetary
+  aggregates were correct, but payslip serialization still read LIVE contract
+  wage/effective dates and employee details. This contradicted the intended
+  historical guarantee. The discrepancy was reported before proceeding;
+  the user's subsequent instruction was **“FIX THE BUG and complete it.”**
+- Branch: `phase-4-gap-fixes`, created directly from that integration tip.
+  The original checkout had unfinished rebase metadata despite reporting a
+  clean working tree. It was left alone. Work is in the isolated worktree
+  `C:\Users\csepr\peoplepay360-gap-fixes`, not on local dev or main.
+
+### LOP formula and unavailable-input policy
+
+`LOP_AMOUNT = (CONTRACT_WAGE / SCHEDULE_WORKING_DAYS_IN_PERIOD) * UNPAID_LEAVE_DAYS`
+
+`LOP_AMOUNT` is now in the resolver's seed vocabulary. The context builder
+counts inclusive period dates whose EXISTING `attendance.schedule_expectations`
+returns positive net hours, with the contract schedule override or employee
+default. Multiple shifts count as one date; weekends follow the actual
+schedule. There is no second implementation of schedule-hour arithmetic.
+All inputs and arithmetic are Decimal; the final LOP is quantized to `0.01`
+with `ROUND_HALF_UP`, without quantizing the intermediate daily rate.
+
+Missing/deleted schedules, unknown hours, or zero working days produce the
+existing `PayrollWarning` shape with code `lop_schedule_unavailable` and
+severity `blocking`, even when unpaid leave is zero. `LOP_AMOUNT` is omitted,
+not replaced with zero. If an active formula or percentage base consumes LOP,
+that employee's computation is skipped and its finding is persisted on the
+payrun; Validate reports it through the existing firewall. A structure that
+does not consume LOP may still compute its lines, but the same warning blocks
+Validate. Fix the schedule and recompute. Attendance's schedule/status logic
+and Phase 4's missing-checkout logic were not changed.
+
+The idempotent demo seed now creates `PP360_DEMO` (“PeoplePay360 Demo Salary”):
+Basic = contract wage; HRA = 40% Basic; Gross = Basic + HRA; Professional Tax
+(demo) = 200; Loss of Pay = `LOP_AMOUNT`; Net = Gross - PT - LOP.
+Existing structures/rules are preserved on repeat seed runs. This seeds the
+salary configuration, not a complete employee/contract/payrun demo dataset.
+
+New hand-computed golden: March 2025 has 21 Monday–Friday working dates;
+contract wage 30,000.00; three approved unpaid days March 10–12.
+`(30000 / 21) * 3 = 4285.714285…`, so LOP = **4,285.71**.
+Basic 30,000.00 + HRA 12,000.00 = Gross 42,000.00;
+Net = 42,000.00 - 200.00 - 4,285.71 = **37,514.29**.
+The test uses the actual seeded deduction rule and a contract schedule
+override with no employee default. Both previous payroll golden function
+sources were compared against origin/dev and are unchanged.
+
+### Gap 2 and Gap 3 verdicts
+
+**Missing checkout: already correct.** One new API regression computes an
+otherwise clean run, proves `missing_checkout` is its only blocking finding,
+proves Validate returns 409, corrects attendance as HR, proves correction
+alone still leaves Validate blocked, then recomputes and validates successfully.
+
+**Historical references: bug fixed.** Compute now captures the public
+employee/contract/payrun response references and Decimal-string input context
+in the same transaction as the persisted monetary lines and totals. Detail,
+list, calculation display, and delivery enqueue use the shared snapshot
+serializer. `PayslipLine` remains the source of line amounts; `Payslip` remains
+the source of its totals. Status still follows the legitimate
+computed → validated → paid lifecycle. Reads never invoke the salary resolver.
+
+One regression pays March, ends its contract March 31, and creates a 36,000.00
+contract effective April 1. It ALSO changes the old contract wage/job and the
+employee name/email, reproducing the original live-reference failure. The
+entire payslip response bytes, shared read/print serialization bytes, list
+item, and captured delivery payload remain identical. Queue calls are mocked;
+no email is sent. There is no PDF renderer in this integration tip: actual PDF
+render/reprint verification belongs to Phase 5, whose worker must consume
+`payslip_response` rather than live contract data. Dashboard salary amounts
+already use persisted payslip totals; its current department grouping and
+contract-attention widget are operational queries, not historical repricing.
+
+**Migration limitation:** migration `018_payroll_snapshots` adds nullable
+`Payslip.reference_snapshot`, `Payslip.context_snapshot`, and
+`Payrun.computation_warnings`. It does not guess historical wages or rewrite
+existing lines/totals. Legacy rows without reference snapshots return 409
+`historical_snapshot_unavailable` on detail/list/delivery reads. A list page
+containing such a row also fails clearly; it does not silently hide the row.
+Draft/computed runs can be recomputed to acquire snapshots. Validated/paid
+runs remain finalized and require actual historical evidence for restoration;
+no automated restoration tool or live-data backfill is provided. Validate
+also blocks legacy computed slips until recomputed. The frontend displays
+the structured error's explanatory message.
+
+### Files created or modified
+
+Paths below are relative to `harmonix360/backend/` unless otherwise stated.
+
+- Created `alembic/versions/018_payroll_snapshots.py` and
+  `app/services/payslip_snapshot.py` for migration and shared historical reads.
+- Modified `app/models/payroll.py`, `app/services/payroll.py`,
+  `app/schemas/payroll.py`, `app/api/v1/routers/payroll.py` for snapshot writes,
+  response/delivery reads, persisted failed-computation warnings, and firewall
+  reporting. Existing public response shapes are preserved.
+- Modified `app/services/payroll_context.py`, `app/services/salary_resolver.py`
+  for the LOP input and explicit unavailable-input policy; `app/seed.py` for
+  the six-rule demo structure.
+- Created `tests/test_payroll_gaps.py`: eight collected cases — exactly one
+  new golden, one checkout regression, one historical regression, three
+  missing/deleted/zero-schedule cases, one legacy recovery case, and one seed
+  idempotency case. Modified `tests/test_payroll_api.py` and
+  `tests/test_salary_api.py` for the expanded seed vocabulary and explicit
+  schedules in finalization fixtures. `tests/conftest.py` cleans up those
+  schedules. Existing golden tests were not edited.
+- Modified `app/services/dashboard.py` only to recognize the new warning
+  codes; dashboard queries were not rewritten. Payrun-only computation
+  failures are exposed by the payrun firewall, not the payslip-only dashboard
+  warning feed. The same labels were added in
+  `frontend/src/types/payroll.ts` and `frontend/src/routes/reports/ReportsPage.tsx`.
+  `frontend/src/lib/api-client.ts` now handles structured `detail.message`.
+- Root docs: additive edits near PRD B7 (**5 added lines**) and Architecture
+  §6/§7 (**7 added lines**) document LOP, missing-checkout firewall, snapshots,
+  and the migration policy. This dated section is the handoff update.
+
+### Validation and reproduction
+
+- Focused payroll run: **39 passed**, including the eight new cases.
+- Full final run: **337 passed in 73.68 seconds**, zero failures/skips, on the
+  isolated migrated and seeded PostgreSQL database (329 existing + 8 new).
+- Ruff checks for syntax, undefined names, and unused imports passed on the
+  touched Python files; `git diff --check` passed.
+- Frontend: `npm ci --no-audit --no-fund`, then `npm run build` passes TypeScript
+  and Vite production build. Existing large-bundle advisory remains.
+- Migration upgraded the existing development database from 017 to 018 and
+  separately upgraded a new `peoplepay360_gap_tests` database from empty to
+  head. Existing development payroll records were preserved.
+- Preliminary full run on the populated development database: 334 passed,
+  three failed — the stale seed-name assertion (updated), plus two existing
+  list/RBAC tests which demand 200 and encountered retained legacy payslips.
+  Those two tests were not weakened; they run unchanged on the isolated test
+  database. The legacy 409 behavior is explicitly covered by the new regression.
+- The first empty-database run lacked seeded actors before attendance tests
+  ran: five existing actor-reference assertions failed (332 passed). Run
+  `python -m app.seed` BEFORE the suite, as in normal application bootstrap;
+  the auth module's local seed fixture runs too late for earlier modules.
+  No attendance/auth logic was changed to hide this prerequisite.
+- Reproduce from `harmonix360/backend`: set `DATABASE_URL` to the application
+  role on an isolated PostgreSQL test database, `MIGRATION_DATABASE_URL` to
+  its migration role, and `REDIS_URL` to local Redis. Run
+  `python -m alembic upgrade head`, `python -m app.seed`, `python -m pytest -q`.
+  The final local run uses `peoplepay360_gap_tests`, PostgreSQL 5432 and Redis
+  6379. The shared original virtualenv supplied Python; imports came from
+  this worktree. No `.env`, live API keys, or platform integrations changed.
+
+Next agent: fetch this branch or its eventual merge on origin/dev before
+starting. Apply migration 018 before running the new code. Do not infer that
+PDF/email delivery or legacy-history restoration has been implemented.

@@ -75,6 +75,11 @@ Directly from PS §4 — nothing added, nothing dropped, nothing weakened by the
 - **B5** Payrun wizard: Step 1 (Structure + Period) → Step 2 (explicit employee selection) → Create Payrun.
 - **B6** Payrun processing: Compute / Validate / Mark Paid / Send Payslips; warnings surfaced pre-finalization; finalized runs preserved as history.
 - **B7** Payslip: rule-by-rule breakdown (Basic/Allowances/Deductions/Gross/Net), using the period-applicable contract.
+
+  Loss of Pay is a deduction rule consuming `LOP_AMOUNT = (CONTRACT_WAGE / SCHEDULE_WORKING_DAYS_IN_PERIOD) * UNPAID_LEAVE_DAYS`, with Decimal arithmetic and final two-place `ROUND_HALF_UP`. Scheduled working days are inclusive period dates with positive net hours from the existing attendance schedule-expectation logic (contract override, otherwise employee default). A missing/deleted schedule or zero working days raises a BLOCKING `lop_schedule_unavailable` finding; no fallback denominator or invented amount is allowed, including when unpaid leave is zero. Fix the schedule and recompute before Validate.
+
+  `missing_checkout` is BLOCKING at the Validate firewall. Correcting attendance alone does not clear its stored finding: recompute is required. Paid payslips retain their stored lines, totals, input context, and employee/contract/period reference snapshot across later contract or employee edits; detail, calculation display, and future PDF reads must use that history without live repricing. Legacy payslips without reference snapshots fail clearly rather than silently substituting today's contract: recompute only unfinalized runs; finalized history requires historical evidence.
+
 - **B8** Payslip PDF generation + bulk email.
 - **B9** Payroll Dashboard: KPIs, charts (Salary Cost by Department, Monthly Net Salary Trend), operational alerts, attendance/leave overview, department breakdown — all query-backed, never static.
 

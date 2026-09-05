@@ -134,8 +134,8 @@ def test_d_a_rule_may_not_reference_its_own_code():
 def test_d_seed_context_names_are_available_from_the_start():
     """The one case that must NOT raise: every seed name is available to the
     very first rule in the structure."""
-    first = _rule("BASIC", SalaryRuleComputation.FORMULA, expression="CONTRACT_WAGE - UNPAID_LEAVE_DAYS")
-    assert SEED_CONTEXT_NAMES == {"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS"}
+    first = _rule("BASIC", SalaryRuleComputation.FORMULA, expression="CONTRACT_WAGE - LOP_AMOUNT")
+    assert SEED_CONTEXT_NAMES == {"WORKED_DAYS", "CONTRACT_WAGE", "UNPAID_LEAVE_DAYS", "LOP_AMOUNT"}
     validate_structure_rule_order([first])  # must not raise
 
 
