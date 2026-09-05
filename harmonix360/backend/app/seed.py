@@ -7,29 +7,41 @@ surfaces on stage.
 
     python -m app.seed
 
-Seeds the identity layer, a demo salary structure including Loss of Pay, and
-the INPUTS for a Loss-of-Pay payroll scenario. One login per role from PRD §3
-plus the departments the HR domain hangs off.
+Seeds the identity layer, a demo salary structure including Loss of Pay, a
+five-person roster across four departments, one FINALIZED (paid) payrun over
+July 2026, and the INPUTS for a live Loss-of-Pay payroll scenario over August
+2026. One login per role from PRD §3 plus the departments the HR domain hangs
+off.
 
-WHAT THIS SEED DELIBERATELY DOES NOT CREATE
--------------------------------------------
-No Payrun, Payslip or PayslipLine — not as an oversight, but because a payslip
+HOW THE PAYSLIPS GET WRITTEN, AND WHY IT MATTERS
+------------------------------------------------
+No Payrun, Payslip or PayslipLine is ever written by hand here. A payslip
 written by anything other than the compute engine is a payslip with no
 `reference_snapshot`, and migration 018 makes exactly those rows return 409
 `historical_snapshot_unavailable` on every read (see progress.md's gap-fix
-section). The seed lays out the inputs; a human presses Compute, and the
-engine writes the payslip properly.
+section) — so a hand-built "paid" payslip would seed a demo whose payslips
+cannot be opened, printed or emailed.
 
-    TODO (Phase 5, PS B8): "a paid payrun with a generated PDF payslip" is
-    part of the demo dataset the acceptance criteria ask for, and it is NOT
-    seeded here. It cannot be: there is no PDF renderer in this tree, and
-    faking one — a placeholder file, a payslip row with a `pdf_url` nothing
-    produced — would make a missing feature look present. When
-    `origin/phase-5-payslip-pdf-email` lands, extend `seed_lop_scenario`
-    to compute → validate → mark paid → send, through the real endpoints.
+The July run is therefore driven through the real `PayrunService`: create →
+compute → validate → mark paid, the same four calls PS B6's buttons make, and
+`_verify_pdf` then renders one of the resulting payslips and checks the bytes
+really are a PDF. That is the whole of PRD §11's "paid payrun with a generated
+PDF" — generated, not asserted.
 
-THE SCENARIO, AND WHY THESE NUMBERS
------------------------------------
+Nothing stores the PDF. `/payslips/{id}/pdf` renders on demand from the
+persisted snapshot, so a cached file would be a second, staler copy of money
+that is supposed to have exactly one source.
+
+WHY AUGUST IS LEFT UNCOMPUTED
+------------------------------
+PRD §7's first acceptance scenario is run LIVE. If the seed had already
+computed August, that live run would collide with its own demo data — every
+employee would come back carrying a blocking `duplicate_payslip` finding,
+which is the firewall working correctly and the demo failing anyway. July is
+seeded and paid; August is left as inputs for a human to press Compute on.
+
+THE LIVE SCENARIO, AND WHY THESE NUMBERS
+-----------------------------------------
 `_seed_lop_scenario` creates one employee whose August 2026 payrun exercises
 Gap-fix's `LOP_AMOUNT` rule end to end:
 
@@ -75,6 +87,7 @@ from app.models.enums import (
     Weekday,
     WorkingScheduleType,
 )
+from app.models.payroll import Payrun
 from app.models.time_off import TimeOffRequest, TimeOffType
 from app.models.user import User
 from app.models.salary import SalaryRule, SalaryStructure
@@ -85,6 +98,7 @@ from app.repositories.hr import (
     TimeOffRequestRepository,
     TimeOffTypeRepository,
 )
+from app.schemas.payroll import PayrunCreate
 from app.schemas.salary import SalaryRuleCreate, SalaryStructureCreate
 from app.schemas.schedule import ScheduleLineInput
 from app.models.working_schedule import WorkingSchedule
@@ -93,12 +107,18 @@ from app.services.attendance import (
     schedule_expectations,
     worked_hours,
 )
+from app.services.payroll import PayrunService, PayslipService
+from app.services.payslip_documents import document_pdf
 from app.services.salary import SalaryRuleService, SalaryStructureService
 from app.services.schedule import WorkingScheduleService
 from app.services.time_off import request_duration
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("peoplepay360.seed")
+
+#: Every audit row this file writes carries this actor, so a demo dataset
+#: is distinguishable from something a person did in the UI.
+SEED_ACTOR = "seed@peoplepay360.com"
 
 # One login per role, so the RBAC matrix can be demonstrated by logging in
 # rather than by describing it. Passwords are obviously weak on purpose: this
@@ -125,12 +145,26 @@ DEMO_USERS: list[tuple[str, str, str, UserRole]] = [
         UserRole.HR_MANAGER,
     ),
     (
+        # Named for the Loss-of-Pay employee on purpose: `_seed_lop_scenario`
+        # links this login to that Employee row, and a login labelled with one
+        # person's name while its self-service screens show another's is the
+        # kind of detail that derails a demo mid-sentence.
         "employee@peoplepay360.com",
         "employee123",
-        "Rahul Verma (Employee)",
+        "Lakshmi Prasad (Employee)",
         UserRole.EMPLOYEE,
     ),
 ]
+
+#: The login `_seed_lop_scenario` attaches its Employee to. Without a link the
+#: token carries no `employee_id` claim, and every "own records only" screen —
+#: own profile, own attendance check-in, own time-off request — has nothing
+#: server-signed to scope by. There is deliberately no API that sets
+#: `Employee.user_id` (Architecture §5 gives account management to Admin, and
+#: `EmployeeCreate` excludes the field so an HR Manager cannot attach an
+#: employee to an account outranking their own), so the ONLY way to demo the
+#: Employee role without editing the database by hand is to seed the link.
+EMPLOYEE_LOGIN_EMAIL = "employee@peoplepay360.com"
 
 DEMO_DEPARTMENTS: list[tuple[str, str]] = [
     ("Engineering", "ENG"),
@@ -179,6 +213,76 @@ LOP_BREAK_MINUTES = 60
 #: OVERTIME. Checked out on every day, so no `missing_checkout` warning.
 LOP_ATTENDANCE_OUT = time(16, 0)
 
+# --------------------------------------------------------------------------
+# The rest of the demo roster, and the already-paid payrun over it.
+#
+# WHY A SECOND, EARLIER PERIOD. The Loss-of-Pay scenario above is deliberately
+# left UNCOMPUTED: PRD §7's first acceptance scenario is run live, on stage,
+# and it ends at a payslip. If the seed had already computed August 2026, the
+# live run would collide with its own demo data — every employee would come
+# back carrying a blocking `duplicate_payslip` finding, which is the firewall
+# working correctly and the demo failing anyway.
+#
+# So the seeded PAID run is July 2026 and the live one is August 2026. They do
+# not overlap, so no duplicate finding fires; and the July run is exactly the
+# thing PRD §11 asks the dataset to contain — a finalized payrun with a real,
+# renderable PDF behind it — without consuming the period the demo needs.
+DEMO_PAID_PERIOD_START = date(2026, 7, 1)
+DEMO_PAID_PERIOD_END = date(2026, 7, 31)
+#: Natural key. `_seed_paid_payrun` looks the run up by this name and does
+#: nothing at all if it is already there, which is what keeps a second
+#: `python -m app.seed` from computing a second July.
+DEMO_PAID_PAYRUN_NAME = "July 2026 payroll (demo)"
+
+#: Four more employees so PS B9's department widgets have more than one bar to
+#: draw. "Salary Cost by Department" and the department breakdown are named
+#: acceptance criteria; against a single-employee database they render as one
+#: column and read as broken rather than as empty. Every one of them has a
+#: department, a schedule and a bank account ON PURPOSE — those three are what
+#: separate a payrun that validates from one that stops at the firewall.
+#:
+#: (first, last, work email, department code, job position, type, wage)
+DEMO_ROSTER: list[tuple[str, str, str, str, str, EmployeeType, Decimal]] = [
+    (
+        "Arjun",
+        "Menon",
+        "arjun.menon@peoplepay360.com",
+        "ENG",
+        "Senior Engineer",
+        EmployeeType.PERMANENT,
+        Decimal("45000.00"),
+    ),
+    (
+        "Divya",
+        "Rao",
+        "divya.rao@peoplepay360.com",
+        "SALES",
+        "Account Executive",
+        # Deliberately not PERMANENT: PS A7 makes the dashboard filterable by
+        # Employee Type, and a filter every row satisfies demonstrates nothing.
+        EmployeeType.CONTRACT,
+        Decimal("38000.00"),
+    ),
+    (
+        "Kabir",
+        "Shah",
+        "kabir.shah@peoplepay360.com",
+        "HR",
+        "HR Generalist",
+        EmployeeType.PERMANENT,
+        Decimal("32000.00"),
+    ),
+    (
+        "Nisha",
+        "Gupta",
+        "nisha.gupta@peoplepay360.com",
+        "FIN",
+        "Finance Analyst",
+        EmployeeType.PERMANENT,
+        Decimal("52000.00"),
+    ),
+]
+
 
 async def _seed_departments(db) -> int:
     created = 0
@@ -213,7 +317,10 @@ async def _seed_users(db) -> int:
             # parses. Fixing it here keeps re-running the seed a valid repair.
             if existing.role != role:
                 existing.role = role
-                created += 0
+            # Same reasoning for the display name, which Phase 7 changed so the
+            # employee login matches the Employee row it is now linked to.
+            if existing.name != name:
+                existing.name = name
             continue
         user = User(
             public_id="temp",
@@ -400,6 +507,38 @@ async def _seed_lop_scenario(db, structure) -> dict:
         )
         created["employee"] = True
 
+    # --- link the employee login to this Employee -------------------------
+    # This is what makes PRD §3's Employee role demonstrable at all. The token
+    # minted at login carries an `employee_id` claim only when some Employee
+    # row points at the user (app/api/v1/routers/auth.py), and every "own
+    # records only" rule compares against that claim rather than trusting a
+    # request body. No endpoint sets `Employee.user_id` — `EmployeeCreate`
+    # excludes it deliberately — so without this the only way to demo Employee
+    # self-service is an UPDATE typed into psql, which PRD §7 rules out.
+    if employee.user_id is None:
+        login = (
+            await db.execute(select(User).where(User.email == EMPLOYEE_LOGIN_EMAIL))
+        ).scalar_one_or_none()
+        if login is not None:
+            already_linked = (
+                await db.execute(
+                    select(Employee.id).where(
+                        Employee.user_id == login.id, Employee.id != employee.id
+                    )
+                )
+            ).scalar_one_or_none()
+            if already_linked is None:
+                # `user_id` is UNIQUE; claiming a login another Employee already
+                # holds would raise rather than silently move the account.
+                employee.user_id = login.id
+                created["employee_login_link"] = True
+            else:
+                logger.warning(
+                    "Login %s is already linked to another Employee; leaving it "
+                    "alone. Employee self-service will act as that person.",
+                    EMPLOYEE_LOGIN_EMAIL,
+                )
+
     # --- contract ---------------------------------------------------------
     contract = (
         await db.execute(
@@ -496,33 +635,78 @@ async def _seed_lop_scenario(db, structure) -> dict:
         created["leave_request"] = True
 
     # --- attendance over the period --------------------------------------
-    # Only if none exists yet for this employee in the window. Complete
-    # check-outs on every scheduled day except the approved leave, so the
-    # period reads as genuinely worked and neither `missing_checkout` (a
-    # blocking warning) nor `no_attendance` (advisory) fires.
-    existing_attendance = (
+    # August, the LIVE demo period, and July, the period the seeded paid run
+    # covers — so both read as genuinely worked. The approved unpaid leave is
+    # skipped in August, which is what makes UNPAID_LEAVE_DAYS three.
+    august_rows = await _seed_attendance_window(
+        db,
+        employee,
+        schedule,
+        LOP_PERIOD_START,
+        LOP_PERIOD_END,
+        skip=(LOP_LEAVE_FROM, LOP_LEAVE_TO),
+    )
+    if august_rows is not None:
+        created["attendance_days"] = august_rows
+    july_rows = await _seed_attendance_window(
+        db, employee, schedule, DEMO_PAID_PERIOD_START, DEMO_PAID_PERIOD_END
+    )
+    if july_rows is not None:
+        created["attendance_days_july"] = july_rows
+
+    await db.commit()
+    return {
+        "employee": employee,
+        "contract": contract,
+        "schedule": schedule,
+        "leave_request": request,
+        "created": created,
+    }
+
+
+async def _seed_attendance_window(
+    db,
+    employee,
+    schedule,
+    start: date,
+    end: date,
+    *,
+    skip: tuple[date, date] | None = None,
+) -> int | None:
+    """Complete check-in/check-out rows on every scheduled day in the window.
+
+    Returns the number of rows written, or `None` when the window already has
+    attendance and nothing was done — the caller reports "new this run"
+    honestly, and a second seed cannot double a month.
+
+    Complete check-outs on every day matter beyond tidiness: an open row makes
+    `missing_checkout` fire, that finding is BLOCKING at the Validate firewall,
+    and a demo dataset whose payrun cannot be validated is not a demo dataset.
+    """
+    existing = (
         await db.execute(
             select(Attendance.id)
             .where(
                 Attendance.employee_id == employee.id,
-                Attendance.check_in >= datetime.combine(LOP_PERIOD_START, time.min, UTC),
-                Attendance.check_in
-                <= datetime.combine(LOP_PERIOD_END, time.max, UTC),
+                Attendance.check_in >= datetime.combine(start, time.min, UTC),
+                Attendance.check_in <= datetime.combine(end, time.max, UTC),
                 Attendance.deleted_at.is_(None),
             )
             .limit(1)
         )
     ).scalar_one_or_none()
-    if existing_attendance is None:
-        workdays = set(LOP_WORKDAYS)
-        day = LOP_PERIOD_START
-        rows = 0
-        while day <= LOP_PERIOD_END:
-            on_leave = LOP_LEAVE_FROM <= day <= LOP_LEAVE_TO
-            if _weekday_of(day) in workdays and not on_leave:
-                check_in = datetime.combine(day, LOP_SHIFT_START, UTC)
-                check_out = datetime.combine(day, LOP_ATTENDANCE_OUT, UTC)
-                row = Attendance(
+    if existing is not None:
+        return None
+
+    workdays = set(LOP_WORKDAYS)
+    day, rows = start, 0
+    while day <= end:
+        on_leave = skip is not None and skip[0] <= day <= skip[1]
+        if _weekday_of(day) in workdays and not on_leave:
+            check_in = datetime.combine(day, LOP_SHIFT_START, UTC)
+            check_out = datetime.combine(day, LOP_ATTENDANCE_OUT, UTC)
+            await AttendanceRepository(db).create(
+                Attendance(
                     public_id="temp",
                     employee_id=employee.id,
                     check_in=check_in,
@@ -534,19 +718,212 @@ async def _seed_lop_scenario(db, structure) -> dict:
                     # with the derivation is a lie waiting to be spotted.
                     status=_derived_status(employee, schedule, check_in, check_out),
                 )
-                await AttendanceRepository(db).create(row)
-                rows += 1
-            day += timedelta(days=1)
-        created["attendance_days"] = rows
+            )
+            rows += 1
+        day += timedelta(days=1)
+    return rows
+
+
+async def _seed_roster(db, structure, schedule) -> tuple[list, dict]:
+    """The four non-LOP demo employees, each with a contract and attendance.
+
+    Same idempotency discipline as `_seed_lop_scenario`: looked up by work
+    email, and the contract by "does this employee already have an active
+    one". A second active contract would not merely duplicate a row — it is
+    the exact thing `contracts_active_period_overlap_excl` refuses, so a
+    careless re-run would crash rather than duplicate.
+    """
+    employees, created = [], {"roster_employees": 0, "roster_contracts": 0}
+    for first, last, email, dept_code, position, kind, wage in DEMO_ROSTER:
+        employee = (
+            await db.execute(
+                select(Employee).where(
+                    Employee.work_email == email, Employee.tenant_id == "default"
+                )
+            )
+        ).scalar_one_or_none()
+        if employee is None:
+            department = (
+                await db.execute(
+                    select(Department).where(
+                        Department.code == dept_code, Department.tenant_id == "default"
+                    )
+                )
+            ).scalar_one_or_none()
+            employee = await EmployeeRepository(db).create(
+                Employee(
+                    public_id="temp",
+                    first_name=first,
+                    last_name=last,
+                    work_email=email,
+                    job_position=position,
+                    employee_type=kind,
+                    department_id=department.id if department else None,
+                    default_schedule_id=schedule.id,
+                    bank_account=f"IN00PP360DEMO{len(employees) + 2:04d}",
+                    hire_date=LOP_CONTRACT_START,
+                )
+            )
+            created["roster_employees"] += 1
+
+        contract = (
+            await db.execute(
+                select(Contract).where(
+                    Contract.employee_id == employee.id,
+                    Contract.status == ContractStatus.ACTIVE,
+                    Contract.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if contract is None:
+            await ContractRepository(db).create(
+                Contract(
+                    public_id="temp",
+                    employee_id=employee.id,
+                    department_id=employee.department_id,
+                    job_position=position,
+                    wage=wage,
+                    salary_structure_id=structure.id,
+                    working_schedule_id=schedule.id,
+                    start_date=LOP_CONTRACT_START,
+                    end_date=None,
+                    status=ContractStatus.ACTIVE,
+                    notes="Demo contract for the seeded roster.",
+                )
+            )
+            created["roster_contracts"] += 1
+
+        for start, end in (
+            (DEMO_PAID_PERIOD_START, DEMO_PAID_PERIOD_END),
+            (LOP_PERIOD_START, LOP_PERIOD_END),
+        ):
+            rows = await _seed_attendance_window(db, employee, schedule, start, end)
+            if rows:
+                created["roster_attendance_days"] = (
+                    created.get("roster_attendance_days", 0) + rows
+                )
+        employees.append(employee)
 
     await db.commit()
-    return {
-        "employee": employee,
-        "contract": contract,
-        "schedule": schedule,
-        "leave_request": request,
-        "created": created,
-    }
+    return employees, created
+
+
+async def _seed_paid_payrun(db, structure, employees) -> dict:
+    """A finalized July 2026 payrun — computed, validated and marked paid
+    through the REAL service methods, then proved to render a real PDF.
+
+    Every step goes through `PayrunService`, never through repositories or
+    SQL, for the reason the module docstring gives: a payslip written by
+    anything other than the compute engine has no `reference_snapshot`, and
+    migration 018 makes exactly those rows answer 409 on every read — so a
+    hand-built "paid" payslip would produce a demo dataset whose payslips
+    cannot be opened, printed or emailed. Compute is the only writer.
+
+    The PDF is RENDERED here rather than asserted about. PRD §11 asks the
+    dataset to contain a payslip with a real generated PDF behind it, and the
+    only honest way to know that is true is to generate one and look at the
+    bytes. Nothing is stored: `/payslips/{id}/pdf` renders on demand from the
+    persisted snapshot, and a cached file would be a second, staler copy of
+    money that is supposed to have exactly one source.
+    """
+    outcome: dict = {"created": False}
+    existing = (
+        await db.execute(
+            select(Payrun).where(
+                Payrun.name == DEMO_PAID_PAYRUN_NAME,
+                Payrun.tenant_id == "default",
+                Payrun.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        outcome["payrun_id"] = existing.public_id
+        outcome["status"] = existing.status.value
+        return outcome
+
+    service = PayrunService(db)
+    payrun = await service.create_payrun(
+        PayrunCreate(
+            name=DEMO_PAID_PAYRUN_NAME,
+            salary_structure_id=structure.public_id,
+            period_start=DEMO_PAID_PERIOD_START,
+            period_end=DEMO_PAID_PERIOD_END,
+            notes="Seeded demo history: a finalized run whose payslips print.",
+            employee_ids=[employee.public_id for employee in employees],
+        ),
+        actor_email=SEED_ACTOR,
+    )
+    await db.commit()
+
+    computed = await service.compute(
+        payrun.public_id, payrun.version, actor_email=SEED_ACTOR
+    )
+    await db.commit()
+    payrun = computed["payrun"]
+    if computed["blocking"]:
+        # Loud rather than silent. A seeded run that cannot be validated is a
+        # broken demo dataset, and the codes name exactly which input is wrong.
+        logger.error(
+            "Seeded July payrun has blocking findings and was left COMPUTED: %s. "
+            "Fix the offending inputs and re-run the seed.",
+            computed["blocking"],
+        )
+        outcome.update(
+            payrun_id=payrun.public_id, status=payrun.status.value, created=True
+        )
+        return outcome
+
+    validated = await service.validate_payrun(
+        payrun.public_id, payrun.version, actor_email=SEED_ACTOR
+    )
+    await db.commit()
+    payrun = validated["payrun"]
+    payrun = await service.mark_paid(
+        payrun.public_id, payrun.version, actor_email=SEED_ACTOR
+    )
+    await db.commit()
+
+    payslips, _ = await PayslipService(db).list_payslips(
+        payrun_id=payrun.public_id, limit=200, offset=0
+    )
+    outcome.update(
+        created=True,
+        payrun_id=payrun.public_id,
+        status=payrun.status.value,
+        payslips=len(payslips),
+        pdf=await _verify_pdf(db, payslips),
+    )
+    return outcome
+
+
+async def _verify_pdf(db, payslips) -> str:
+    """Render one seeded payslip and report what actually came back.
+
+    Never raises. The seed runs as the backend container's start command
+    (`alembic upgrade head && python -m app.seed && uvicorn ...`), so an
+    exception here would stop the whole application from starting over a
+    document-rendering dependency. WeasyPrint needs native Pango/Cairo
+    libraries and the DejaVu fonts at `PAYSLIP_FONT_DIR`; the image installs
+    both, a bare host may well not. That is worth an explicit ERROR line
+    naming the cause, and is not worth taking the API down for.
+    """
+    if not payslips:
+        return "no payslip to render"
+    try:
+        pdf = await document_pdf(db, payslips[0].public_id)
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed silently
+        logger.error(
+            "Payslip PDF rendering is UNAVAILABLE in this environment: %s: %s. "
+            "The paid payrun and its payslips are correct; only the document "
+            "renderer is missing (WeasyPrint native libraries / PAYSLIP_FONT_DIR).",
+            type(exc).__name__,
+            exc,
+        )
+        return f"unavailable ({type(exc).__name__})"
+    if not pdf.startswith(b"%PDF-"):
+        logger.error("Payslip renderer returned %d bytes that are not a PDF.", len(pdf))
+        return "invalid"
+    return f"{payslips[0].public_id} renders {len(pdf)} bytes"
 
 
 def _weekday_of(day: date) -> Weekday:
@@ -579,6 +956,14 @@ async def seed() -> None:
         structure = await _seed_salary_structure(db)
         await db.commit()
         scenario = await _seed_lop_scenario(db, structure)
+        roster, roster_created = await _seed_roster(
+            db, structure, scenario["schedule"]
+        )
+        # The Loss-of-Pay employee is paid in July alongside everyone else;
+        # only their August is left for the live demo.
+        paid = await _seed_paid_payrun(
+            db, structure, [scenario["employee"], *roster]
+        )
 
     logger.info(
         "Seed complete: %d department(s), %d user(s) created.", departments, users
@@ -590,7 +975,13 @@ async def seed() -> None:
     for email, password, _, role in DEMO_USERS:
         logger.info("  %-38s %-14s %s", email, password, role.value)
 
-    created = scenario["created"]
+    created = {**scenario["created"], **roster_created}
+    logger.info(
+        "Roster: %d employee(s) across %d department(s), all with a schedule, "
+        "a bank account and an open-ended active contract.",
+        len(roster) + 1,
+        len(DEMO_DEPARTMENTS),
+    )
     logger.info(
         "Loss-of-Pay scenario: employee %s, contract %s (wage %s), approved unpaid "
         "leave %s..%s.",
@@ -602,19 +993,33 @@ async def seed() -> None:
     )
     logger.info(
         "  new this run: %s",
-        ", ".join(f"{key}={value}" for key, value in created.items()) or "nothing (already seeded)",
+        ", ".join(f"{key}={value}" for key, value in created.items())
+        or "nothing (already seeded)",
     )
+
+    if paid["created"]:
+        logger.info(
+            "Paid payrun %s (%s): %s, %s payslip(s). PDF: %s.",
+            paid["payrun_id"],
+            DEMO_PAID_PAYRUN_NAME,
+            paid["status"],
+            paid.get("payslips", 0),
+            paid.get("pdf", "not rendered"),
+        )
+    else:
+        logger.info(
+            "Paid payrun %s (%s) was already seeded; left untouched.",
+            paid["payrun_id"],
+            paid["status"],
+        )
+
     logger.info(
-        "  To see it: create a payrun over %s..%s on structure PP360_DEMO, select "
-        "%s, and Compute. Expect LOP 4285.71 and Net 37514.29.",
+        "  LIVE DEMO (PRD §7 scenario 1): create a payrun over %s..%s on structure "
+        "PP360_DEMO, select %s, and Compute. Expect LOP 4285.71 and Net 37514.29, "
+        "then Validate / Mark paid / Print / Send payslips.",
         LOP_PERIOD_START,
         LOP_PERIOD_END,
         scenario["employee"].public_id,
-    )
-    logger.info(
-        "  NOT SEEDED (TODO, pending Phase 5 / PS B8): a paid payrun with a "
-        "generated PDF payslip. No PDF renderer exists in this tree; the seed "
-        "does not fake one. See the module docstring."
     )
 
 

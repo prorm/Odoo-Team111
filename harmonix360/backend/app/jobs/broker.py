@@ -17,9 +17,17 @@ result_backend = RedisAsyncResultBackend(
     result_ex_time=3600,  # results expire after 1 hour
 )
 
-# Broker: ListQueueBroker is async-native and uses Redis LIST for queueing
+# Broker: ListQueueBroker is async-native and uses Redis LIST for queueing.
+# socket_timeout=None is required: the listen loop's BRPOP blocks indefinitely
+# waiting for the next task, but redis-py 8.x defaults every connection to a
+# 5s read timeout (its new maintenance-notifications "relaxed timeout"
+# feature). Left at that default, the idle BRPOP read times out every 5s,
+# taskiq_redis's listen() only catches ConnectionError (not TimeoutError), and
+# the whole worker process crashes and respawns in an infinite loop even with
+# no task in flight.
 broker = ListQueueBroker(
     url=settings.REDIS_URL,
+    socket_timeout=None,
 ).with_result_backend(result_backend)
 
 # Import and register audit middleware after broker is created

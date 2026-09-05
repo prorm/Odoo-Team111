@@ -21,22 +21,56 @@ from tests.test_dashboard import (
 async def test_seed_does_not_create_or_rewrite_legacy_payslips(
     client, dashboard_dataset
 ):
+    """Every payslip that existed before the seed ran survives it byte for byte.
+
+    Phase 7 gave the seed its own paid demo payrun (`DEMO_PAID_PAYRUN_NAME`),
+    so "the seed writes no payslips at all" is no longer the claim — and
+    asserting the whole table is unchanged would now be asserting that the
+    demo dataset does not exist. The two claims that actually matter are
+    checked separately and are both stronger than the old equality:
+
+    1. PRESERVATION — every pre-existing row is identical afterwards, compared
+       column by column. This is the real content of migration 018's promise:
+       finalized history is never rewritten, repriced or backfilled by a seed.
+    2. IDEMPOTENCE — the second `seed()` adds nothing the first did not. A
+       seed that computed a fresh July payrun on every run would duplicate
+       payslips for the same period, which is precisely the thing
+       `duplicate_payslip` exists to catch.
+    """
+
     async def persisted_rows():
         async with AsyncSessionLocal() as session:
-            return (
-                (await session.execute(select(Payslip.__table__).order_by(Payslip.id)))
+            return {
+                row["public_id"]: row
+                for row in (
+                    await session.execute(
+                        select(Payslip.__table__).order_by(Payslip.id)
+                    )
+                )
                 .mappings()
                 .all()
-            )
+            }
 
     before = await persisted_rows()
-    assert before and any(row["reference_snapshot"] is None for row in before)
+    assert before and any(
+        row["reference_snapshot"] is None for row in before.values()
+    )
+
     await seed()
+    after_first = await persisted_rows()
     await seed()
-    assert await persisted_rows() == before
+    after_second = await persisted_rows()
+
+    # 1. Preservation: nothing that existed before was touched or removed.
+    assert {key: after_second[key] for key in before} == dict(before)
+    # 2. Idempotence: the second run created nothing new.
+    assert set(after_second) == set(after_first)
+    assert after_second == after_first
 
     legacy_id = next(
-        row["public_id"] for row in before if row["reference_snapshot"] is None
+        public_id
+        for public_id, row in before.items()
+        if row["reference_snapshot"] is None
     )
     response = await client.get(
         f"/api/v1/payslips/{legacy_id}", headers=PAYROLL_MANAGER
