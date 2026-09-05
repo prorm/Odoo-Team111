@@ -2118,6 +2118,43 @@ nothing else would ever have made it re-read.
   `peoplepay360_backend`, and `pip install -r requirements-dev.txt` does not
   survive a container recreate.
 
+### Follow-up found while writing the run instructions: /health was not proxied
+
+Stopping the backend container did **not** put the app into offline mode when it
+was served by the Docker frontend, and this is worth recording because of the
+shape of the bug rather than its size.
+
+`reachability.ts` pings `/health`, which sits outside the `/api` prefix.
+`vite.config.ts` has a second proxy entry for exactly that reason, with a
+comment saying so. `nginx.conf` never got the matching entry — so `try_files`
+answered `/health` with `index.html` and a **200**, `res.ok` was true, and the
+app cheerfully reported itself online with the backend stopped. The offline
+banner worked under the dev server and not in the container: the environment
+you test on and the one you ship diverged, which is the worst place for a
+difference to hide.
+
+`nginx.conf` now proxies `location = /health` to the backend. With the backend
+stopped nginx answers 504, which is a falsy `res.ok` and the honest answer,
+while `GET /` still serves the app shell so the SPA keeps running.
+
+Verified in a browser against the **nginx build** (127.0.0.1:3000, not
+localhost:3000 — see below), driving the cycle with `docker stop/start
+peoplepay360_backend` rather than Playwright's offline mode: banner appears on
+stop, check-in queues, banner clears on start, outbox drains, and exactly one
+row reaches the server. 6/6.
+
+**A correction to this session's Phase 7 notes.** A Vite dev server was running
+on port 3000 throughout, bound to `::1`, while the Docker frontend was bound to
+`::`. On Windows `localhost` resolves to `::1` first, so every browser check in
+this session that used `http://localhost:3000` was served by **Vite from
+source**, not by the container's built bundle. The behaviour those checks
+verified is real — same application code, same backend, same database — but the
+Phase 7 note crediting the container rebuild for making "Print Payslip" appear
+is wrong: the merged source was what the browser saw. The rebuild was still
+needed for the containerised deployment, which is what this `/health` fix was
+found in. Use `127.0.0.1:3000` to reach the container and `localhost:3000` to
+reach the dev server, or stop one of them.
+
 ### Next work
 
 Phase 9 (AI and MCP) and Phase 10 (realtime, observability) — both P2, both
