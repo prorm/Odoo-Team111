@@ -6,7 +6,7 @@ import { StatusMessage } from '@/components/StatusMessage';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { fetchApi } from '@/lib/api-client';
+import { ApiError, fetchApi } from '@/lib/api-client';
 import { useHrCollection } from '@/hooks/useAttendanceTimeOff';
 import type { Employee } from '@/types/hr';
 import { EMPLOYEE_STATUS_LABELS, EMPLOYEE_TYPE_LABELS } from '@/types/hr';
@@ -43,8 +43,13 @@ export function MyProfilePage() {
   }
 
   if (profile.error) {
-    const unlinked =
-      profile.error instanceof Error && /not found|no employee/i.test(profile.error.message);
+    // The STATUS, not the wording. This used to sniff the message for
+    // /not found|no employee/, which the server's actual sentence ("This login
+    // is not linked to an employee record") does not match — so the explanation
+    // below never rendered and every admin/payroll login got a red
+    // "Something went wrong" instead. A 404 from a route that scopes by the
+    // signed claim means exactly one thing, and it is not an error.
+    const unlinked = profile.error instanceof ApiError && profile.error.isNotFound;
     return unlinked ? (
       <Card>
         <CardContent className="p-6 space-y-2">

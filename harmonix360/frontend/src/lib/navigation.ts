@@ -20,6 +20,14 @@ export interface NavItem {
   icon: LucideIcon;
   /** Roles that may see this entry. Presentation only — see the note below. */
   roles: readonly UserRole[];
+  /** Hide unless this login actually owns an Employee row.
+   *
+   *  Role is the wrong question for a self-service screen. `hasRole` treats
+   *  ADMIN as satisfying every list, so an admin saw "My Profile" and landed on
+   *  a 404 — and any HR login linked to an employee record has a perfectly good
+   *  profile that a role check would have hidden. What the entry needs is the
+   *  record, so that is what it asks for. */
+  requiresEmployeeRecord?: boolean;
 }
 
 /**
@@ -37,12 +45,18 @@ export interface NavItem {
  * most easily blurred by a nav that shows everything to everyone.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
-  // Employee-only, and deliberately first for that role: PRD §4's Employee
-  // stories start at "view own profile", and every other entry an Employee can
-  // see is a log of something rather than a record of them. HR roles already
-  // reach any employee through Employees, and their logins usually have no
-  // Employee row at all, so the entry would lead them to an empty page.
-  { name: 'My Profile', href: '/my-profile', icon: UserCircle, roles: [UserRole.EMPLOYEE] },
+  // Deliberately first for an Employee: PRD §4's Employee stories start at
+  // "view own profile", and every other entry an Employee can see is a log of
+  // something rather than a record of them. Shown to any role, but only when
+  // the login owns an Employee row — a payroll or admin account normally does
+  // not, and the entry would lead it to an empty page.
+  {
+    name: 'My Profile',
+    href: '/my-profile',
+    icon: UserCircle,
+    roles: [...HR_ROLES, ...PAYROLL_ROLES, UserRole.EMPLOYEE],
+    requiresEmployeeRecord: true,
+  },
   { name: 'Employees', href: '/employees', icon: Users, roles: HR_ROLES },
   { name: 'Contracts', href: '/contracts', icon: FileText, roles: HR_ROLES },
   { name: 'Attendance', href: '/attendance', icon: Clock, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
@@ -67,6 +81,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'Anomalies', href: '/anomalies', icon: ShieldAlert, roles: PAYROLL_ROLES },
 ];
 
-export function visibleNavItems(role: UserRole | undefined): NavItem[] {
-  return NAV_ITEMS.filter((item) => hasRole(role, item.roles));
+export function visibleNavItems(
+  role: UserRole | undefined,
+  hasEmployeeRecord = false,
+): NavItem[] {
+  return NAV_ITEMS.filter(
+    (item) =>
+      hasRole(role, item.roles) && (!item.requiresEmployeeRecord || hasEmployeeRecord),
+  );
 }

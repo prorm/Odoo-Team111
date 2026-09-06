@@ -1,4 +1,5 @@
 import { getToken } from '@/lib/auth';
+import { endSession } from '@/lib/session';
 
 const API_BASE = '/api/v1';
 
@@ -89,6 +90,20 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
+
+    // An expired or rejected token is a SESSION event, not a failed request.
+    // Rendering it as one is what produced a red "Request failed (401)" on
+    // whatever screen happened to be open, while the app still believed it was
+    // signed in. End the session once and send the user to the login screen
+    // with somewhere to come back to.
+    //
+    // `/auth/login` is excluded: a 401 there means the password was wrong, and
+    // bouncing the user off the login page they are already on would replace a
+    // clear message with a mysterious reload.
+    if (response.status === 401 && !endpoint.startsWith('/auth/login')) {
+      endSession();
+    }
+
     throw new ApiError(response.status, describeError(response.status, payload), payload);
   }
 

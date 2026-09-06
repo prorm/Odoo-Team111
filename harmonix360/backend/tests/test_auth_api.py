@@ -68,6 +68,64 @@ async def test_me_reports_the_authenticated_role(client):
     assert body["role"] == UserRole.HR_PAYROLL_USER.value
 
 
+async def test_refresh_extends_an_active_session(client):
+    """The sliding session: a still-valid token buys a later-expiring one.
+
+    Without this the 15-minute lifetime logged people out mid-payrun with no
+    way back but a manual re-login.
+    """
+    original = (
+        await _login(client, "payroll.manager@peoplepay360.com", "payroll123")
+    ).json()["access_token"]
+
+    resp = await client.post(
+        "/api/v1/auth/refresh", headers={"Authorization": f"Bearer {original}"}
+    )
+    assert resp.status_code == 200, resp.text
+    renewed = resp.json()["access_token"]
+
+    before, after = decode_token(original), decode_token(renewed)
+    assert after["exp"] >= before["exp"], "a refresh that does not extend is not a refresh"
+    assert after["sub"] == before["sub"]
+    # Re-read from the database, not copied from the old claims -- so a role
+    # change or a deactivation takes effect within one token lifetime.
+    assert after["role"] == UserRole.HR_PAYROLL_MANAGER.value
+
+    reused = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {renewed}"}
+    )
+    assert reused.status_code == 200, reused.text
+
+
+async def test_refresh_without_a_token_is_refused(client):
+    """The load-bearing one.
+
+    `get_current_user` treats an unauthenticated request as the demo admin
+    outside production, so a refresh route built on that dependency would hand
+    an admin token to anyone who can reach the port. This route reads the
+    bearer token itself for exactly that reason.
+    """
+    resp = await client.post("/api/v1/auth/refresh")
+    assert resp.status_code == 401, resp.text
+    assert "access_token" not in resp.text
+
+
+async def test_refresh_rejects_a_token_it_did_not_sign(client):
+    """An expired or forged token cannot be traded for a live one — otherwise
+    the short lifetime would bound nothing, and an idle session would never
+    actually end."""
+    forged = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJleHAiOjE3MDAwMDAwMDAsInN1YiI6ImFkbWluQHBlb3BsZXBheTM2MC5jb20iLCJyb2xlIjoiYWRtaW4ifQ."
+        "not-a-real-signature"
+    )
+    resp = await client.post(
+        "/api/v1/auth/refresh", headers={"Authorization": f"Bearer {forged}"}
+    )
+    assert resp.status_code == 401, resp.text
+    assert "access_token" not in resp.text
+
+
 async def test_roles_endpoint_lists_exactly_the_five_roles(client):
     resp = await client.get("/api/v1/auth/roles")
     assert resp.status_code == 200

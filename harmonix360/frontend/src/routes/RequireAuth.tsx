@@ -1,6 +1,8 @@
+import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 
 import { getToken } from '@/lib/auth';
+import { startSessionRefresh, stopSessionRefresh } from '@/lib/session';
 
 /**
  * Sends anyone without a token to the login screen.
@@ -19,8 +21,17 @@ import { getToken } from '@/lib/auth';
  */
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const signedIn = Boolean(getToken());
 
-  if (!getToken()) {
+  // The sliding session runs for exactly as long as the user is inside the
+  // authenticated app: started here, stopped on unmount. See lib/session.ts.
+  React.useEffect(() => {
+    if (!signedIn) return;
+    startSessionRefresh();
+    return stopSessionRefresh;
+  }, [signedIn]);
+
+  if (!signedIn) {
     // `state` carries where they were headed, so a deep link survives the
     // detour through login rather than dumping everyone on the same page.
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;

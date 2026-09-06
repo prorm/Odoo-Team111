@@ -32,7 +32,7 @@ export function AppShell() {
   // Until /auth/me answers, render no nav rather than the full nav. Showing
   // everything and then removing entries would flash Payroll at an HR Manager
   // who may not open it — a confusing first impression of what they can do.
-  const navItems = visibleNavItems(user?.role);
+  const navItems = visibleNavItems(user?.role, Boolean(user?.employee_id));
   const currentSection = navItems.find((item) => location.pathname.startsWith(item.href));
 
   // Close the mobile drawer on navigation; leaving it open covers the page the

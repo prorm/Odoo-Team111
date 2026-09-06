@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import CurrentUser, get_current_user
+from app.api.v1.deps import CurrentUser, get_current_user, oauth2_scheme
 from app.core.database import get_db
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, decode_token, verify_password
 from app.models.enums import UserRole, UserStatus
 from app.models.user import User
 from app.schemas.auth import Token, UserLogin, UserResponse
@@ -68,6 +68,62 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
         employee_id=await _employee_public_id_for(db, user),
     )
     return Token(access_token=token)
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh(
+    token: str | None = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+):
+    """Exchange a still-valid access token for a fresh one (a sliding session).
+
+    WHY THIS EXISTS. The access token lives 15 minutes and nothing renewed it,
+    so anyone who kept a screen open longer than that had their next click fail
+    — mid-payrun, with no way back except a manual re-login. That is not a
+    security property, it is a lost afternoon: the short lifetime is there to
+    bound the damage of a *stolen* token, and it still does, because this
+    endpoint refuses an expired one. An idle session past 15 minutes still ends.
+
+    WHY NOT `get_current_user`. That dependency treats an unauthenticated
+    request as the demo admin outside production (deps.py), which here would be
+    a token-minting oracle for anyone who can reach the port. This reads the
+    bearer token directly and requires a real, unexpired one.
+
+    The user is re-read from the database on every refresh rather than copied
+    out of the old token's claims, so a deactivated account, a changed role, or
+    a newly linked employee record takes effect within one token lifetime
+    instead of persisting for as long as somebody keeps clicking.
+    """
+    unauthenticated = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        raise unauthenticated
+
+    payload = decode_token(token)
+    if not payload or "sub" not in payload:
+        raise unauthenticated
+
+    result = await db.execute(
+        select(User).where(User.email == payload["sub"], User.deleted_at.is_(None))
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise unauthenticated
+    if user.status is not UserStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This account is inactive"
+        )
+
+    return Token(
+        access_token=create_access_token(
+            subject=user.email,
+            role=user.role.value,
+            employee_id=await _employee_public_id_for(db, user),
+        )
+    )
 
 
 @router.get("/me", response_model=UserResponse)

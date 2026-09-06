@@ -37,3 +37,31 @@ export function clearToken(): void {
     /* see setToken */
   }
 }
+
+/**
+ * When the current token expires, as epoch milliseconds — or null if there is
+ * no token or it carries no readable `exp`.
+ *
+ * This decodes the JWT payload in the browser WITHOUT verifying it, which is
+ * safe for exactly this use and nothing else: the answer is used to decide
+ * *when to ask the server for a new token*, never to decide what the holder may
+ * do. A forged `exp` buys an attacker a badly timed refresh request, which the
+ * server then rejects on its own terms. Roles are still read from `/auth/me`
+ * (see useCurrentUser) precisely because that is an authorization question and
+ * this is not.
+ */
+export function tokenExpiresAt(): number | null {
+  const token = getToken();
+  if (!token) return null;
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    // base64url -> base64, then pad. atob rejects the URL-safe alphabet.
+    const normalised = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalised.padEnd(Math.ceil(normalised.length / 4) * 4, '=');
+    const exp = JSON.parse(atob(padded))?.exp;
+    return typeof exp === 'number' ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}

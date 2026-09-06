@@ -35,6 +35,9 @@ export function LoginPage() {
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
 
+  // Set by lib/session.ts when it ends a session the server rejected.
+  const expired = new URLSearchParams(window.location.search).has('expired');
+
   const login = useMutation({
     mutationFn: (credentials: { email: string; password: string }) =>
       fetchApi<TokenResponse>('/auth/login', {
@@ -47,7 +50,12 @@ export function LoginPage() {
       // Clearing rather than invalidating means none of it can be shown for a
       // moment under the new identity while a refetch is in flight.
       queryClient.clear();
-      navigate('/employees', { replace: true });
+      // Come back to whatever the expired session was looking at, when there
+      // is one and it is a path within this app rather than an absolute URL
+      // somebody appended to the query string.
+      const from = new URLSearchParams(window.location.search).get('from');
+      const safe = from && from.startsWith('/') && !from.startsWith('//') ? from : null;
+      navigate(safe ?? '/employees', { replace: true });
     },
   });
 
@@ -90,6 +98,16 @@ export function LoginPage() {
 
           <section className="rounded-md border border-slate-800 bg-white p-5 sm:p-6">
             <form onSubmit={submit} className="space-y-4">
+              {/* Says WHY they are here. Landing back on a blank sign-in form
+                  mid-task otherwise reads as the app having lost their work. */}
+              {expired && !login.error && (
+                <p
+                  role="status"
+                  className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+                >
+                  Your session timed out. Sign in again to pick up where you left off.
+                </p>
+              )}
               <StatusMessage error={login.error} />
 
               <FormField label="Email" htmlFor="login_email" required>
