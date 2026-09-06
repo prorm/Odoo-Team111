@@ -4,6 +4,8 @@ import { Link, useParams } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { ApiError } from '@/lib/api-client';
 import {
   Table,
   TableBody,
@@ -58,6 +60,34 @@ export function PayrunDetailPage() {
 
   const [lastCompute, setLastCompute] = useState<ComputeResult>();
   const [open, setOpen] = useState<Payslip>();
+
+  // A run that no longer exists is ONE fact about the page, not a defect in
+  // each panel on it. React Query keeps serving the cached run while the
+  // sub-resource refetches 404, which rendered a fully populated screen with
+  // "Payrun not found" stacked on it in two places — the worst of both, since
+  // every figure on it was stale. Any 404 here means the same thing, so it is
+  // reported once, plainly, and the stale figures are not shown at all.
+  const gone = [payrun, payslips, validation, deliveries].some(
+    (q) => q.error instanceof ApiError && q.error.isNotFound,
+  );
+  if (gone) {
+    return (
+      <div className="p-6">
+        <Link to="/payroll" className="text-sm text-teal-700 hover:underline">
+          ← All payruns
+        </Link>
+        <Card className="mt-4">
+          <CardContent className="space-y-2 p-6">
+            <h1 className="text-lg font-semibold text-slate-100">This payrun no longer exists</h1>
+            <p className="text-sm text-slate-400">
+              It was deleted, or the database was reset while this page was open. Nothing shown
+              here would still be accurate, so it is not shown.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (payrun.isLoading) return <p className="p-6 text-sm text-slate-400">Loading payrun…</p>;
   if (payrun.error) return <div className="p-6"><ErrorMessage error={payrun.error} /></div>;

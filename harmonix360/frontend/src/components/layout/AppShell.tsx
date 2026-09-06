@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ToastProvider } from '@/components/ui/toast';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { clearToken } from '@/lib/auth';
+import { stopSessionRefresh } from '@/lib/session';
 import { visibleNavItems } from '@/lib/navigation';
 import { ROLE_LABELS } from '@/types/enums';
 
@@ -33,6 +34,18 @@ export function AppShell() {
   // everything and then removing entries would flash Payroll at an HR Manager
   // who may not open it — a confusing first impression of what they can do.
   const navItems = visibleNavItems(user?.role, Boolean(user?.employee_id));
+
+  function signOut() {
+    // Stop the sliding session FIRST. Clearing the token without stopping it
+    // leaves a timer that wakes up, finds no token, and does nothing useful —
+    // and on a shared machine the next person's login inherits its schedule.
+    stopSessionRefresh();
+    clearToken();
+    // Clear, not invalidate: every cached row was fetched under the previous
+    // role, and none of it should be visible for even a frame under the next.
+    queryClient.clear();
+    navigate('/login', { replace: true });
+  }
   const currentSection = navItems.find((item) => location.pathname.startsWith(item.href));
 
   // Close the mobile drawer on navigation; leaving it open covers the page the
@@ -112,24 +125,21 @@ export function AppShell() {
                   )}
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="Sign out"
-                title="Sign out"
-                onClick={() => {
-                  clearToken();
-                  // Clear, not invalidate: every cached row was fetched under
-                  // the previous role, and none of it should be visible for
-                  // even a frame under the next one.
-                  queryClient.clear();
-                  navigate('/login', { replace: true });
-                }}
-                className="flex-shrink-0 text-[#AEBBCB] hover:bg-white/10 hover:text-white"
-              >
-                <LogOut className="h-4 w-4" />
-              </Button>
             </div>
+
+            {/* Labelled, full width, and below the identity it acts on. It was
+                an icon-only ghost button tucked beside the email, which reads
+                as decoration — people looked for "Sign out" and reported it
+                missing. */}
+            <Button
+              variant="ghost"
+              aria-label="Sign out"
+              onClick={signOut}
+              className="mt-2 w-full justify-start gap-2 text-[#AEBBCB] hover:bg-white/10 hover:text-white"
+            >
+              <LogOut className="h-4 w-4 flex-shrink-0" />
+              <span className="text-xs font-medium">Sign out</span>
+            </Button>
           </div>
         </aside>
 
