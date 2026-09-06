@@ -164,7 +164,13 @@ _PROVIDERS = [
 _SYSTEM_MESSAGE = (
     "You are the explanation layer of an HR and payroll system. The figures you are "
     "given were calculated by a deterministic engine and are final. Explain them; never "
-    "recalculate them, and never state an amount that was not given to you."
+    "recalculate them, and never state an amount that was not given to you. "
+    # Length is a correctness property here, not a style preference: an answer
+    # that runs past the token ceiling is cut off mid-sentence, and a payroll
+    # explanation whose conclusion is missing is worse than a short one.
+    "Answer in under 200 words. Lead with the conclusion — what changed and why — "
+    "then the few figures that support it. Do not restate every line of the payslip; "
+    "the reader can already see it."
 )
 
 #: Prompts contain real payroll data — names, wages, net pay. They are never
@@ -173,7 +179,11 @@ _SYSTEM_MESSAGE = (
 #: payslip into `docker compose logs` and, through the collector, into whatever
 #: ingests them. Only sizes and outcomes are recorded here; the content is
 #: returned to the caller and goes nowhere else.
-_MAX_TOKENS = 1024
+#: Headroom over what the system message asks for, so the ceiling is a backstop
+#: rather than the thing that ends the answer. At 1024 a verbose model ran out
+#: mid-sentence ("...the employee had 3 unpaid leave days in") and the
+#: conclusion — the part a payroll officer actually needs — was the part lost.
+_MAX_TOKENS = 2048
 _TEMPERATURE = 0.3
 
 

@@ -658,22 +658,66 @@ async def build_anomaly_context(
     )
 
     signals = await deterministic_signals(session, filters)
-    context.add("deterministic_signals", signals["signals"], source=signals["source"])
+
+    # Send the findings that matter, not all of them.
+    #
+    # Every finding is a per-employee row, so the payload grows with headcount:
+    # on a five-person roster the whole list fit comfortably, and on a
+    # sixty-person one it reached ~13.7k tokens and the provider refused the
+    # request outright. The narration then failed for the only reason a reader
+    # would never guess — there was too much to say.
+    #
+    # The COUNTS below are computed over every finding, so the summary the model
+    # narrates from stays accurate; only the itemised list is capped. Severity
+    # first, so a truncated list drops the least important rows rather than an
+    # arbitrary tail, and the cap is declared in the context so the model can
+    # say "and N more" instead of implying it saw everything.
+    ranked = sorted(
+        signals["signals"],
+        key=lambda s: (_SEVERITY_ORDER.get(str(s.get("severity", "")).lower(), 99), str(s.get("type", ""))),
+    )
+    shown = ranked[:_MAX_NARRATED_SIGNALS]
+    context.add("deterministic_signals", shown, source=signals["source"])
     context.add(
         "signal_summary",
         {
             "total": len(signals["signals"]),
+            "shown_in_detail": len(shown),
+            "omitted_from_detail": len(signals["signals"]) - len(shown),
             "by_severity": signals["by_severity"],
             "by_type": signals["by_type"],
         },
         source=signals["source"],
     )
+    if len(shown) < len(signals["signals"]):
+        context.note_unavailable(
+            f"Only the {len(shown)} highest-severity findings are listed individually. "
+            f"The totals in signal_summary cover all {len(signals['signals'])}; "
+            "do not describe the itemised list as complete."
+        )
     if not signals["signals"]:
         context.note_unavailable(
             "No deterministic anomaly check produced a finding for this period and scope. "
             "There is genuinely nothing unusual to report; do not manufacture an observation."
         )
     return context
+
+
+#: How many individual anomaly findings the narration context itemises.
+#: Bounded because the list grows with headcount and the provider has a
+#: per-request token ceiling; the SUMMARY still counts every finding.
+_MAX_NARRATED_SIGNALS = 20
+
+#: Blocking first. Anomalies use high/medium/low; payslip warnings that reach
+#: the same list use blocking/advisory. Anything unrecognised sorts last rather
+#: than being dropped or crashing the sort.
+_SEVERITY_ORDER = {
+    "blocking": 0,
+    "high": 1,
+    "medium": 2,
+    "advisory": 3,
+    "low": 4,
+}
 
 
 async def deterministic_signals(session: AsyncSession, filters: ResolvedFilters) -> dict:

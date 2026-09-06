@@ -10,7 +10,7 @@ import { Select } from '@/components/ui/select';
 import { useAiAsk, useAiProposal } from '@/hooks/useAi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { AI_TASK_LABELS, AI_TASK_TYPES, type AiTaskType } from '@/types/ai';
-import { PAYROLL_ROLES, hasRole } from '@/types/enums';
+import { HR_ROLES, PAYROLL_ROLES, UserRole, hasRole } from '@/types/enums';
 
 /**
  * The AI assistant (PS §5.1).
@@ -212,11 +212,46 @@ function EvidencePanel({
   );
 }
 
+/**
+ * Which question types a role may actually ask, mirroring `_TASK_ROLES` in
+ * app/ai/context_assembly.py.
+ *
+ * Presentation only — the server re-applies the same check inside the worker,
+ * and that is the control. This exists because the dropdown previously offered
+ * every type to everyone, so an Employee could pick a payroll question and get
+ * a raw 403 for choosing something the UI had just presented as available.
+ *
+ * An Employee can ask NOTHING here: their half of this screen is the
+ * propose-and-confirm leave request below, not payroll investigation.
+ */
+function askableTaskTypes(role: UserRole | undefined): AiTaskType[] {
+  if (!role) return [];
+  const payroll = hasRole(role, PAYROLL_ROLES);
+  const hr = hasRole(role, HR_ROLES);
+  return AI_TASK_TYPES.filter((type) =>
+    type === 'general' ? hr || payroll : payroll,
+  );
+}
+
 function AskPanel() {
+  const { data: user } = useCurrentUser();
+  const available = React.useMemo(() => askableTaskTypes(user?.role), [user?.role]);
+
   const [taskType, setTaskType] = React.useState<AiTaskType>('pending_actions');
   const [question, setQuestion] = React.useState(SUGGESTED_QUESTION.pending_actions);
   const [params, setParams] = React.useState<Record<string, string>>({});
   const ai = useAiAsk();
+
+  // Keep the selection inside what this role may ask, once /auth/me answers.
+  React.useEffect(() => {
+    if (available.length > 0 && !available.includes(taskType)) {
+      setTaskType(available[0]);
+      setQuestion(SUGGESTED_QUESTION[available[0]]);
+      setParams({});
+      ai.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [available]);
 
   const fields = TASK_FIELDS[taskType];
   const missing = fields.filter((field) => field.required && !params[field.key]?.trim());
@@ -235,6 +270,25 @@ function AskPanel() {
       Object.entries(params).filter(([, value]) => value.trim() !== ''),
     );
     void ai.ask({ question, task_type: taskType, params: cleaned });
+  }
+
+  // Nothing this role may ask. Saying so beats rendering a form whose every
+  // option the server will refuse.
+  if (user && available.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Ask about real records</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-slate-400">
+            Payroll investigation is limited to HR and payroll roles. Your assistant is the
+            leave request below — describe the time off you want and confirm it before
+            anything is created.
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
@@ -257,7 +311,7 @@ function AskPanel() {
                   onChange={(event) => changeTask(event.target.value as AiTaskType)}
                   className="mt-1"
                 >
-                  {AI_TASK_TYPES.map((type) => (
+                  {available.map((type) => (
                     <option key={type} value={type}>
                       {AI_TASK_LABELS[type]}
                     </option>
