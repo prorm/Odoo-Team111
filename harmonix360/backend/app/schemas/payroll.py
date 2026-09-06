@@ -249,6 +249,22 @@ class PayrunRef(ORMModel):
     period_start: date
     period_end: date
     status: PayrunStatus
+    #: PS B7 lists Structure among the payslip's identification fields. It is a
+    #: property of the RUN, not of the payslip, so it belongs on the run
+    #: reference the payslip already carries rather than being duplicated onto
+    #: the payslip itself — and putting it here means a payslip opened straight
+    #: from the Payslips list is labelled as completely as one opened from its
+    #: payrun.
+    #:
+    #: OPTIONAL, and deliberately so. This reference is replayed from
+    #: `Payslip.reference_snapshot`, which is frozen at compute time, so a
+    #: payslip computed before this field existed has no structure in its
+    #: snapshot. Reading it off the live payrun instead would be exactly the
+    #: "backfill a finalized record from live references and call it history"
+    #: that payslip_snapshot's docstring forbids. So an older payslip reports
+    #: the structure as absent and the screen omits the field, rather than the
+    #: read failing or inventing evidence.
+    salary_structure: Optional[SalaryStructureRef] = None
 
 
 class PayslipResponse(ORMModel):

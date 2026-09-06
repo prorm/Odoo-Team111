@@ -46,6 +46,16 @@ def payslip_response(payslip):
     def reference(key):
         values = dict(snapshot[key])
         values["public_id"] = values.pop("id")
+        # The payrun reference nests the salary structure, which is itself keyed
+        # on `public_id`. Rewriting only the outer id would leave the nested ref
+        # unvalidatable, so the rename recurses one level. Absent on snapshots
+        # captured before the structure was recorded — left absent rather than
+        # resolved from the live run.
+        nested = values.get("salary_structure")
+        if isinstance(nested, dict) and "id" in nested:
+            nested = dict(nested)
+            nested["public_id"] = nested.pop("id")
+            values["salary_structure"] = nested
         return values
 
     return PayslipResponse.model_validate(

@@ -13,7 +13,13 @@ export function PayslipDetail({ payslip, onClose }: {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-4xl max-h-[95vh] overflow-y-auto">
         <DialogTitle>{payslip.employee.first_name} {payslip.employee.last_name}</DialogTitle>
-        <DialogDescription>{payslip.payrun.name} · Payslip preview</DialogDescription>
+        <DialogDescription>
+          {payslip.payrun.name}
+          {payslip.payrun.salary_structure
+            ? ` · structure ${payslip.payrun.salary_structure.code}`
+            : ''}{' '}
+          · {payslip.payrun.period_start} to {payslip.payrun.period_end} · {payslip.status}
+        </DialogDescription>
         {payslip.warnings.length > 0 && (
           <ul className="mb-4 space-y-2">
             {payslip.warnings.map((warning, index) => (

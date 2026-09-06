@@ -43,6 +43,21 @@
   </tr><tr>
     <td><div class="label">Contract wage</div><div class="value">{{ slip.contract.wage | money }}</div><span class="muted">{{ slip.contract.id }}</span></td>
     <td><div class="label">Worked days</div><div class="value">{{ slip.worked_days }}</div></td>
+  </tr><tr>
+    {# PS B7 names Structure among the payslip's identification fields. Absent
+       on payslips whose frozen snapshot predates the field — omitted rather
+       than backfilled from the live run. #}
+    <td><div class="label">Structure</div>
+      {% if slip.payrun.salary_structure %}
+        <div class="value">{{ slip.payrun.salary_structure.name }}</div><span class="muted">{{ slip.payrun.salary_structure.code }}</span>
+      {% else %}
+        <div class="value muted">not recorded on this payslip</div>
+      {% endif %}
+    </td>
+    {# Name and period only. The run's STATUS is deliberately NOT printed: it is
+       replayed live rather than from the snapshot (validated -> paid), and this
+       document must stay byte-identical once computed. #}
+    <td><div class="label">Pay run</div><div class="value">{{ slip.payrun.name }}</div><span class="muted">{{ slip.payrun.period_start }} to {{ slip.payrun.period_end }}</span></td>
   </tr></table>
   <table class="lines"><thead><tr><th>#</th><th>Rule</th><th>Code</th><th>Category</th><th class="amount">Amount</th></tr></thead><tbody>
   {% for line in slip.lines %}

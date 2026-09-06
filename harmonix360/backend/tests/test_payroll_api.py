@@ -1151,6 +1151,84 @@ async def test_eligible_employees_lists_only_those_the_engine_could_pay(
     assert contractless["id"] not in by_id
 
 
+async def test_a_payslip_names_its_structure_without_a_second_request(
+    client, cleanup_employees, cleanup_salary_config, cleanup_payroll
+):
+    """PS B7 lists Structure among the payslip's identification fields.
+
+    It is a property of the RUN, so it rides on the payrun reference the
+    payslip already carries. The point of asserting it HERE, from the payslip
+    read, is that a payslip opened from the Payslips list — with no payrun
+    request anywhere near it — is still labelled with the structure it was
+    computed against.
+    """
+    employee = await make_employee(client)
+    await make_contract(client, employee["id"], wage="45000.00")
+    structure = await standard_structure(client)
+    payrun = await make_payrun(client, structure["id"], [employee["id"]])
+    await compute(client, payrun)
+
+    payslip = (
+        await client.get(f"/api/v1/payruns/{payrun['id']}/payslips", headers=PAYROLL_USER)
+    ).json()["items"][0]
+
+    named = payslip["payrun"]["salary_structure"]
+    assert named is not None, "PS B7's Structure field must reach the payslip"
+    assert named["id"] == structure["id"]
+    assert named["code"] == structure["code"]
+
+    # ...and it agrees with the run, rather than being a second, drifting copy.
+    run = (
+        await client.get(f"/api/v1/payruns/{payrun['id']}", headers=PAYROLL_USER)
+    ).json()
+    assert named == run["salary_structure"]
+
+
+async def test_a_payslip_snapshot_without_a_structure_reports_absence_not_an_error(
+    client, cleanup_employees, cleanup_salary_config, cleanup_payroll
+):
+    """A payslip computed before the structure was captured must still read.
+
+    `reference_snapshot` is frozen at compute, so rows written by an earlier
+    version of this code have no structure in them. Resolving it from the live
+    payrun instead would be precisely the "backfill a finalized record from
+    live references and call it history" that payslip_snapshot.py forbids — so
+    the field comes back null and the screen omits it. The read must not fail.
+    """
+    employee = await make_employee(client)
+    await make_contract(client, employee["id"], wage="45000.00")
+    structure = await standard_structure(client)
+    payrun = await make_payrun(client, structure["id"], [employee["id"]])
+    await compute(client, payrun)
+
+    payslips = (
+        await client.get(f"/api/v1/payruns/{payrun['id']}/payslips", headers=PAYROLL_USER)
+    ).json()["items"]
+    public_id = payslips[0]["id"]
+
+    # Age the snapshot back to its pre-structure shape.
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(select(Payslip).where(Payslip.public_id == public_id))
+        ).scalar_one()
+        aged = dict(row.reference_snapshot)
+        aged["payrun"] = {
+            key: value
+            for key, value in aged["payrun"].items()
+            if key != "salary_structure"
+        }
+        row.reference_snapshot = aged
+        await session.commit()
+
+    response = await client.get(f"/api/v1/payslips/{public_id}", headers=PAYROLL_USER)
+    assert response.status_code == 200, response.text
+    assert response.json()["payrun"]["salary_structure"] is None
+
+    # The document renders too, rather than raising on the missing field.
+    preview = await client.get(f"/api/v1/payslips/{public_id}/preview", headers=PAYROLL_USER)
+    assert preview.status_code == 200, preview.text
+
+
 async def test_a_payrun_requires_an_explicit_non_empty_selection(client, cleanup_salary_config):
     """PS B5 calls the selection explicit. An empty list is refused rather
     than being read as "everybody"."""

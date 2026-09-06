@@ -32,6 +32,11 @@ export interface PayrunRef {
   period_start: string;
   period_end: string;
   status: PayrunStatus;
+  /** PS B7's "Structure" field. Carried on the run reference so a payslip
+   *  opened from the Payslips list is labelled as fully as one opened from
+   *  its payrun. Null on a payslip whose frozen reference snapshot predates
+   *  the field — never backfilled from the live payrun. */
+  salary_structure: SalaryStructureRef | null;
 }
 
 export interface Payrun {
