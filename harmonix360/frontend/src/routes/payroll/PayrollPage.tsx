@@ -34,11 +34,11 @@ export function PayrollPage() {
   const payruns = usePayruns(offset, status || undefined);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-5">
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-100">Payroll</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <h1 className="text-xl font-semibold text-slate-100">Payroll</h1>
+          <p className="mt-1 text-xs text-slate-400">
             Payruns execute one salary structure over one period, for an explicitly selected set of
             employees.
           </p>

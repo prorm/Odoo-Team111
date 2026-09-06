@@ -49,7 +49,7 @@ export function StatusMessage({ error, className }: StatusMessageProps) {
   return (
     <div
       role="alert"
-      className={cn('flex gap-2.5 rounded-lg border px-3 py-2.5 text-xs', styles, className)}
+      className={cn('flex gap-2.5 rounded-md border px-3 py-2.5 text-xs', styles, className)}
     >
       <Icon className="h-4 w-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
       <div className="space-y-0.5">

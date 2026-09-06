@@ -5,6 +5,7 @@ import {
   CalendarDays,
   Clock,
   FileText,
+  Settings2,
   UserCircle,
   Users,
   Wallet,
@@ -47,6 +48,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'Attendance', href: '/attendance', icon: Clock, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
   { name: 'Time Off', href: '/time-off', icon: CalendarDays, roles: [...HR_ROLES, UserRole.EMPLOYEE] },
   { name: 'Payroll', href: '/payroll', icon: Wallet, roles: PAYROLL_ROLES },
+  { name: 'Salary Setup', href: '/salary-setup', icon: Settings2, roles: PAYROLL_ROLES },
   { name: 'Reports', href: '/reports', icon: BarChart3, roles: PAYROLL_ROLES },
   // PS §5.1. Visible to everyone with a login, because the screen does two
   // different jobs for two different audiences: payroll roles ask contextual

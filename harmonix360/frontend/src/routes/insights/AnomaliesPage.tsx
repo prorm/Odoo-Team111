@@ -69,7 +69,7 @@ export function AnomaliesPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-100">Anomalies</h1>
+          <h1 className="text-xl font-semibold text-slate-100">Anomalies</h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
             Deterministic checks over real records. These are application queries with stated
             thresholds — not a model's opinion, and never a judgement about whether payroll is
@@ -95,48 +95,38 @@ export function AnomaliesPage() {
 
       {anomalies.data && (
         <>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Findings</CardDescription>
-                <CardTitle className="text-2xl">{summary?.total ?? 0}</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>By severity</CardDescription>
-                <CardContent className="p-0 pt-1">
-                  <div className="flex flex-wrap gap-1">
-                    {Object.entries(summary?.by_severity ?? {}).map(([severity, count]) => (
-                      <Badge key={severity} variant={SEVERITY_VARIANT[severity] ?? 'secondary'}>
-                        {severity}: {count}
-                      </Badge>
-                    ))}
-                    {Object.keys(summary?.by_severity ?? {}).length === 0 && (
-                      <span className="text-sm text-slate-400">none</span>
-                    )}
-                  </div>
-                </CardContent>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Checks that fired</CardDescription>
-                <CardContent className="p-0 pt-1">
-                  <div className="flex flex-wrap gap-1">
-                    {Object.keys(summary?.by_type ?? {}).map((type) => (
-                      <Badge key={type} variant="secondary">
-                        {ANOMALY_LABELS[type] ?? type}
-                      </Badge>
-                    ))}
-                    {Object.keys(summary?.by_type ?? {}).length === 0 && (
-                      <span className="text-sm text-slate-400">none</span>
-                    )}
-                  </div>
-                </CardContent>
-              </CardHeader>
-            </Card>
-          </div>
+          <section className="grid gap-px overflow-hidden rounded-md border border-slate-800 bg-slate-800 sm:grid-cols-3">
+            <div className="bg-white p-4">
+              <p className="text-sm text-slate-400">Findings</p>
+              <p className="mt-1 text-2xl font-semibold text-slate-100">{summary?.total ?? 0}</p>
+            </div>
+            <div className="bg-white p-4">
+              <p className="text-sm text-slate-400">By severity</p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {Object.entries(summary?.by_severity ?? {}).map(([severity, count]) => (
+                  <Badge key={severity} variant={SEVERITY_VARIANT[severity] ?? 'secondary'}>
+                    {severity}: {count}
+                  </Badge>
+                ))}
+                {Object.keys(summary?.by_severity ?? {}).length === 0 && (
+                  <span className="text-sm text-slate-400">none</span>
+                )}
+              </div>
+            </div>
+            <div className="bg-white p-4">
+              <p className="text-sm text-slate-400">Checks that fired</p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {Object.keys(summary?.by_type ?? {}).map((type) => (
+                  <Badge key={type} variant="secondary">
+                    {ANOMALY_LABELS[type] ?? type}
+                  </Badge>
+                ))}
+                {Object.keys(summary?.by_type ?? {}).length === 0 && (
+                  <span className="text-sm text-slate-400">none</span>
+                )}
+              </div>
+            </div>
+          </section>
 
           {anomalies.data.anomalies.length === 0 ? (
             <Card>

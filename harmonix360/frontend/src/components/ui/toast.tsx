@@ -33,15 +33,20 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col space-y-2 max-w-md w-full">
+      <div
+        className="fixed bottom-4 right-4 z-50 flex w-full max-w-md flex-col space-y-2 px-4 sm:px-0"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {messages.map((msg) => (
           <div
             key={msg.id}
+            role={msg.type === 'error' ? 'alert' : 'status'}
             className={cn(
-              'flex items-start p-4 rounded-xl border shadow-xl backdrop-blur-md transition-all animate-in slide-in-from-bottom-5 duration-200',
-              msg.type === 'success' && 'bg-slate-900/90 border-emerald-500/30 text-emerald-300',
-              msg.type === 'error' && 'bg-slate-900/90 border-red-500/30 text-red-300',
-              (!msg.type || msg.type === 'info') && 'bg-slate-900/90 border-indigo-500/30 text-indigo-300'
+              'flex items-start rounded-md border bg-white p-4 text-slate-100 shadow-[0_12px_30px_rgba(19,36,58,0.16)]',
+              msg.type === 'success' && 'border-emerald-800',
+              msg.type === 'error' && 'border-red-800',
+              (!msg.type || msg.type === 'info') && 'border-indigo-800'
             )}
           >
             {msg.type === 'success' && <CheckCircle2 className="h-5 w-5 text-emerald-400 mr-3 mt-0.5 flex-shrink-0" />}
@@ -53,7 +58,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             </div>
             <button
               onClick={() => removeToast(msg.id)}
-              className="text-slate-400 hover:text-white transition-colors ml-2"
+              className="ml-2 text-slate-400 transition-colors hover:text-slate-100"
+              aria-label="Dismiss notification"
             >
               <X className="h-4 w-4" />
             </button>

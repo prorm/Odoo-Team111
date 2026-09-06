@@ -97,7 +97,7 @@ export function ContractTimeMachine({ employeeId }: { employeeId: string }) {
         <div
           className={`rounded-lg border p-3 text-sm ${
             data.resolution.resolved
-              ? 'border-indigo-500/40 bg-indigo-500/5 text-slate-200'
+              ? 'border-indigo-500/40 bg-indigo-500/5 text-indigo-200'
               : 'border-amber-500/40 bg-amber-500/10 text-amber-100'
           }`}
         >

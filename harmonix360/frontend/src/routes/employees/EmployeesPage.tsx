@@ -209,7 +209,7 @@ function ViewToggle({
       onClick={onClick}
       aria-pressed={active}
       className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors ${
-        active ? 'bg-indigo-600/20 text-indigo-300' : 'text-slate-400 hover:text-slate-200'
+        active ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
       }`}
     >
       {children}

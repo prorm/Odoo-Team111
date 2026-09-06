@@ -173,7 +173,7 @@ export function TimeOffPage() {
       {records.isLoading ? (
         <p>Loading time off…</p>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-slate-800">
+        <div className="overflow-hidden rounded-md border border-slate-800">
           <Table>
             <TableHeader>
               <TableRow>

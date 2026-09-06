@@ -86,7 +86,7 @@ export function PayrunDetailPage() {
   const emphasis = (action: typeof next) => (next === action ? 'default' : 'outline');
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <Link to="/payroll" className="text-sm text-indigo-400 hover:underline">

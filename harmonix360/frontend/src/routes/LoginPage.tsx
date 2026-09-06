@@ -1,12 +1,10 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Wallet } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { FormField } from '@/components/FormField';
 import { StatusMessage } from '@/components/StatusMessage';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { fetchApi } from '@/lib/api-client';
 import { setToken } from '@/lib/auth';
@@ -65,20 +63,32 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
-      <div className="w-full max-w-sm space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-400 shadow-lg shadow-indigo-950/50">
-            <Wallet className="h-5 w-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-slate-100">PeoplePay360</h1>
-            <p className="text-[11px] text-slate-400">HR &amp; Payroll</p>
-          </div>
+    <div className="min-h-screen bg-slate-950 lg:grid lg:grid-cols-[minmax(20rem,0.8fr)_minmax(32rem,1.2fr)]">
+      <aside className="flex min-h-40 flex-col justify-between bg-[#13243A] p-6 text-white sm:p-8 lg:min-h-screen lg:p-12">
+        <div>
+          <p className="text-lg font-semibold tracking-tight">PeoplePay360</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#AEBBCB]">
+            HR &amp; Payroll
+          </p>
         </div>
 
-        <Card>
-          <CardContent className="p-5">
+        <div className="mt-10 hidden max-w-sm lg:block">
+          <p className="text-3xl font-semibold leading-tight tracking-tight text-white">
+            People, payroll, and policy records in one working system.
+          </p>
+        </div>
+
+        <p className="hidden text-xs text-[#AEBBCB] lg:block">PeoplePay360 · HR &amp; Payroll</p>
+      </aside>
+
+      <main className="flex items-start justify-center p-4 sm:p-8 lg:min-h-screen lg:items-center lg:p-12">
+        <div className="w-full max-w-xl">
+          <header className="mb-6 border-b border-slate-800 pb-5">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-100">Sign in</h1>
+            <p className="mt-1 text-sm text-slate-400">Use your PeoplePay360 account to continue.</p>
+          </header>
+
+          <section className="rounded-md border border-slate-800 bg-white p-5 sm:p-6">
             <form onSubmit={submit} className="space-y-4">
               <StatusMessage error={login.error} />
 
@@ -108,38 +118,35 @@ export function LoginPage() {
                 {login.isPending ? 'Signing in…' : 'Sign in'}
               </Button>
             </form>
-          </CardContent>
-        </Card>
+          </section>
 
-        <Card>
-          <CardContent className="p-4">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Demo logins
-            </p>
-            <p className="mb-3 text-[11px] text-slate-400">
-              Each role sees a different navigation and is refused different endpoints — the checks
-              are server-side, so the difference is real rather than a hidden button.
-            </p>
-            <ul className="space-y-1">
+          <section className="mt-4 rounded-md border border-slate-800 bg-white">
+            <div className="border-b border-slate-800 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+                Demo logins
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Each role sees different navigation and server-enforced endpoint access.
+              </p>
+            </div>
+            <ul className="divide-y divide-slate-800/70">
               {DEMO_LOGINS.map((demo) => (
                 <li key={demo.email}>
                   <button
                     type="button"
                     onClick={() => useDemoLogin(demo)}
                     disabled={login.isPending}
-                    className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-50"
+                    className="flex min-h-10 w-full items-center justify-between gap-3 px-4 py-2 text-left text-xs text-slate-300 transition-colors hover:bg-slate-950 disabled:opacity-50"
                   >
-                    <span className="truncate">{demo.role}</span>
-                    <span className="ml-2 truncate font-mono text-[10px] text-slate-500">
-                      {demo.email}
-                    </span>
+                    <span className="font-medium">{demo.role}</span>
+                    <span className="truncate text-[11px] text-slate-500">{demo.email}</span>
                   </button>
                 </li>
               ))}
             </ul>
-          </CardContent>
-        </Card>
-      </div>
+          </section>
+        </div>
+      </main>
     </div>
   );
 }

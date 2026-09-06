@@ -44,7 +44,7 @@ export function FirewallPanel({
   const clear = report.blocking_count === 0;
 
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+    <section className="rounded-md border border-slate-800 bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           {clear ? (
@@ -98,7 +98,7 @@ export function FirewallPanel({
           {report.groups.map((group) => (
             <li
               key={group.code}
-              className={`rounded-lg border p-3 ${
+              className={`rounded-md border p-3 ${
                 group.severity === 'blocking'
                   ? 'border-rose-800/60 bg-rose-950/30'
                   : 'border-amber-800/50 bg-amber-950/20'

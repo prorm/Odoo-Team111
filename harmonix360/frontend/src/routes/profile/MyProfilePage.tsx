@@ -112,10 +112,9 @@ export function MyProfilePage() {
             against them.
           </p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-px overflow-hidden rounded-md border border-slate-800 bg-slate-800 sm:grid-cols-2 lg:grid-cols-3">
             {balances.map((allocation) => (
-              <Card key={allocation.id}>
-                <CardContent className="p-4 space-y-1">
+              <div key={allocation.id} className="bg-white p-4">
                   <p className="text-sm text-slate-200">{allocation.time_off_type.name}</p>
                   <p className="text-2xl font-semibold text-slate-100">{allocation.remaining}</p>
                   <p className="text-xs text-slate-500">
@@ -123,8 +122,7 @@ export function MyProfilePage() {
                     {allocation.valid_from}
                     {allocation.valid_to ? ` to ${allocation.valid_to}` : ''}
                   </p>
-                </CardContent>
-              </Card>
+              </div>
             ))}
           </div>
         )}

@@ -11,6 +11,7 @@ import { AttendancePage } from './routes/attendance/AttendancePage';
 import { TimeOffPage } from './routes/time-off/TimeOffPage';
 import { PayrollPage } from './routes/payroll/PayrollPage';
 import { PayrunDetailPage } from './routes/payroll/PayrunDetailPage';
+import { SalarySetupPage } from './routes/salary-setup/SalarySetupPage';
 import { ReportsPage } from './routes/reports/ReportsPage';
 import { MyProfilePage } from './routes/profile/MyProfilePage';
 import { AssistantPage } from './routes/assistant/AssistantPage';
@@ -62,6 +63,7 @@ const router = createBrowserRouter([
       },
       { path: 'payroll', element: <PayrollPage /> },
       { path: 'payroll/:payrunId', element: <PayrunDetailPage /> },
+      { path: 'salary-setup', element: <SalarySetupPage /> },
       {
         path: 'reports',
         element: <ReportsPage />,

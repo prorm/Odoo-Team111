@@ -102,9 +102,9 @@ const ATTENDANCE_STATUS_LABELS: Record<string, string> = {
 };
 
 const CHART_TOOLTIP_STYLE = {
-  contentStyle: { background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 },
-  labelStyle: { color: '#e2e8f0' },
-  cursor: { fill: 'rgba(99, 102, 241, 0.08)' },
+  contentStyle: { background: '#ffffff', border: '1px solid #CBD2DB', borderRadius: 4, fontSize: 12 },
+  labelStyle: { color: '#172033' },
+  cursor: { fill: 'rgba(11, 102, 112, 0.08)' },
 } as const;
 
 export function ReportsPage() {
@@ -240,23 +240,21 @@ function KpiCard({
   hint?: string;
 }) {
   return (
-    <Card>
-      <CardContent className="p-4">
+    <div className="min-w-0 bg-white p-4">
         <div className="flex items-center gap-1.5 text-xs text-slate-400">
           <Icon className="h-3.5 w-3.5" />
           {label}
         </div>
         <p className="mt-2 text-2xl font-semibold text-slate-100">{value}</p>
         {hint && <p className="mt-1 text-[11px] text-slate-500">{hint}</p>}
-      </CardContent>
-    </Card>
+    </div>
   );
 }
 
 function KpiRow({ data }: { data: DashboardResponse }) {
   const { kpis, attendance } = data;
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+    <section className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-slate-800 bg-slate-800 md:grid-cols-3 xl:grid-cols-5">
       <KpiCard icon={Wallet} label="Total Net Salary Paid" value={money(kpis.total_net_salary_paid)} />
       <KpiCard icon={FileText} label="Payslips Generated" value={String(kpis.payslips_generated)} />
       <KpiCard icon={TrendingUp} label="Average Salary" value={money(kpis.average_salary)} />
@@ -271,7 +269,7 @@ function KpiRow({ data }: { data: DashboardResponse }) {
             : 'No scheduled employees in this filter'
         }
       />
-    </div>
+    </section>
   );
 }
 
@@ -295,11 +293,11 @@ function SalaryByDepartmentChart({ rows }: { rows: DepartmentAmount[] }) {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis dataKey="department" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={{ stroke: '#1e293b' }} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={{ stroke: '#1e293b' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#D6DDE4" vertical={false} />
+              <XAxis dataKey="department" tick={{ fill: '#66758A', fontSize: 12 }} axisLine={{ stroke: '#CBD2DB' }} />
+              <YAxis tick={{ fill: '#66758A', fontSize: 12 }} axisLine={{ stroke: '#CBD2DB' }} />
               <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(value: number) => money(String(value))} />
-              <Bar dataKey="amount" name="Net paid" fill="#6366f1" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="amount" name="Net paid" fill="#0B6670" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -322,11 +320,11 @@ function MonthlyTrendChart({ rows }: { rows: MonthlyTrendPoint[] }) {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={{ stroke: '#1e293b' }} />
-              <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={{ stroke: '#1e293b' }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#D6DDE4" vertical={false} />
+              <XAxis dataKey="month" tick={{ fill: '#66758A', fontSize: 12 }} axisLine={{ stroke: '#CBD2DB' }} />
+              <YAxis tick={{ fill: '#66758A', fontSize: 12 }} axisLine={{ stroke: '#CBD2DB' }} />
               <Tooltip {...CHART_TOOLTIP_STYLE} formatter={(value: number) => money(String(value))} />
-              <Line type="monotone" dataKey="amount" name="Net paid" stroke="#22d3ee" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="amount" name="Net paid" stroke="#0F7C85" strokeWidth={2} dot={{ r: 3 }} />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -351,11 +349,11 @@ function WarningsCard({ warnings }: { warnings: PayrollWarning[] }) {
         {warnings.length === 0 ? (
           <p className="py-6 text-center text-sm text-slate-500">No payroll warnings for this period.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="divide-y divide-slate-800 border-y border-slate-800">
             {warnings.map((warning, index) => (
               <li
                 key={`${warning.payslip_id}-${index}`}
-                className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3"
+                className="flex items-start justify-between gap-3 py-3"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm text-slate-200">{warning.employee_name}</p>
@@ -394,11 +392,11 @@ function ContractAttentionCard({ items }: { items: ContractAttentionItem[] }) {
         {items.length === 0 ? (
           <p className="py-6 text-center text-sm text-slate-500">No contract issues right now.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="divide-y divide-slate-800 border-y border-slate-800">
             {items.map((item, index) => (
               <li
                 key={`${item.employee_id}-${index}`}
-                className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3"
+                className="flex items-start justify-between gap-3 py-3"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm text-slate-200">{item.employee_name}</p>
@@ -462,16 +460,16 @@ function TimeOffOverviewCard({ timeOff }: { timeOff: TimeOffOverview }) {
         <CardDescription>Request status and current leave balances.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-2 text-center">
-          <div className="rounded-lg border border-slate-800 bg-slate-950/40 py-2">
+        <div className="grid grid-cols-3 gap-px overflow-hidden border border-slate-800 bg-slate-800 text-center">
+          <div className="bg-slate-950 py-2">
             <p className="text-lg font-semibold text-amber-300">{timeOff.pending}</p>
             <p className="text-[11px] text-slate-500">Pending</p>
           </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-950/40 py-2">
+          <div className="bg-slate-950 py-2">
             <p className="text-lg font-semibold text-emerald-300">{timeOff.approved}</p>
             <p className="text-[11px] text-slate-500">Approved</p>
           </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-950/40 py-2">
+          <div className="bg-slate-950 py-2">
             <p className="text-lg font-semibold text-rose-300">{timeOff.refused}</p>
             <p className="text-[11px] text-slate-500">Refused</p>
           </div>

@@ -187,7 +187,7 @@ export function PayrunWizard({
                   </span>
                   <span className="text-slate-400">{formatMoney(row.wage)}</span>
                   {row.partial_period && (
-                    <span className="rounded-full border border-amber-800/50 bg-amber-950/60 px-2 py-0.5 text-xs text-amber-400">
+                    <span className="rounded-sm border border-amber-800 bg-amber-950 px-2 py-0.5 text-xs text-amber-400">
                       Partial period
                     </span>
                   )}

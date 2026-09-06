@@ -9,7 +9,7 @@ export function OfflineBanner() {
   if (online) return null;
 
   return (
-    <div data-testid="offline-banner" className="flex items-center justify-center gap-2 bg-amber-950/60 border-b border-amber-800/60 text-amber-300 text-xs font-medium py-2 px-4">
+    <div data-testid="offline-banner" className="flex items-center justify-center gap-2 border-b border-amber-800 bg-amber-950 px-4 py-2 text-xs font-medium text-amber-300">
       <WifiOff className="h-3.5 w-3.5" />
       You're offline — changes are being saved locally and will sync automatically once you're back online.
     </div>

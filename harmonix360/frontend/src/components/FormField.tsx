@@ -44,7 +44,7 @@ export function FormField({
           announce the error with the field rather than as loose text. */}
       <div aria-describedby={cn(errorId, hintId) || undefined}>{children}</div>
       {hint && !error && (
-        <p id={hintId} className="text-[11px] text-slate-500">
+        <p id={hintId} className="text-[11px] text-slate-400">
           {hint}
         </p>
       )}

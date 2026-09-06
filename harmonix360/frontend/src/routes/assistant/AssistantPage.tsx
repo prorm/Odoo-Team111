@@ -586,7 +586,7 @@ export function AssistantPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-100">Assistant</h1>
+        <h1 className="text-xl font-semibold text-slate-100">Assistant</h1>
         <p className="mt-1 text-sm text-slate-400">
           Explanations and proposals over live records. The payroll engine remains the only
           authority for every amount — the assistant reads and explains, it never calculates.

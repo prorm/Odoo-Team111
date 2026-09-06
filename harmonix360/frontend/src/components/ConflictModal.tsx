@@ -46,11 +46,11 @@ export function ConflictModal() {
           </DialogHeader>
 
           <div className="space-y-3 text-sm">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+            <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
               <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Your offline version</div>
               <div className="text-slate-200">{mineText}</div>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+            <div className="rounded-md border border-slate-800 bg-slate-950 p-3">
               <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
                 Server version (v{current.current_version})
               </div>

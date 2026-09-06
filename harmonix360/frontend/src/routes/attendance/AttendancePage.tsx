@@ -188,7 +188,7 @@ export function AttendancePage() {
       {records.isLoading ? (
         <p>Loading attendance…</p>
       ) : (
-        <div className="rounded-xl border border-slate-800 overflow-hidden">
+        <div className="overflow-hidden rounded-md border border-slate-800">
           <Table>
             <TableHeader>
               <TableRow>

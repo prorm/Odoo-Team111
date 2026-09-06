@@ -76,7 +76,7 @@ export function ManagerSelect({ value, currentLabel, excludeId, onChange }: Mana
         onClick={() => setOpen((previous) => !previous)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-950/80 px-3 text-left text-sm text-slate-100 transition-colors hover:border-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+        className="flex h-9 w-full items-center justify-between rounded-md border border-slate-800 bg-white px-3 text-left text-sm text-slate-100 transition-colors hover:border-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/20"
       >
         <span className={cn(!value && 'text-slate-500')}>
           {value ? selectedLabel ?? 'Selected' : 'No manager'}
@@ -101,7 +101,7 @@ export function ManagerSelect({ value, currentLabel, excludeId, onChange }: Mana
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-slate-800 bg-slate-900 shadow-xl">
+        <div className="absolute z-50 mt-1 w-full rounded-md border border-slate-800 bg-white shadow-[0_12px_30px_rgba(19,36,58,0.16)]">
           <div className="relative border-b border-slate-800 p-2">
             <Search className="absolute left-4 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
             <Input
